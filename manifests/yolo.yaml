@@ -1,0 +1,93 @@
+# YOLO Model Manifest
+# Supports: YOLOv8, YOLOv9, YOLOv10, YOLOv11
+
+model:
+  name: yolo
+  family: ultralytics
+  variants:
+    - yolo_v8n
+    - yolo_v8s
+    - yolo_v8m
+    - yolo_v8l
+    - yolo_v8x
+    - yolo_v11n
+    - yolo_v11s
+    - yolo_v11m
+    - yolo_v11l
+  default_variant: yolo_v8s
+
+source:
+  type: ultralytics  # ultralytics, huggingface, local
+  repo: ultralytics/ultralytics
+
+input:
+  type: image
+  format: rgb
+  preprocessing:
+    resize:
+      method: letterbox
+      target_size: [640, 640]
+    normalize:
+      mean: [0.0, 0.0, 0.0]
+      std: [1.0, 1.0, 1.0]
+      scale: 255.0
+
+output:
+  type: detections
+  format: xyxy  # bounding box format
+  fields:
+    - name: boxes
+      dtype: float32
+      shape: [N, 4]
+      description: Bounding boxes in xyxy format
+    - name: scores
+      dtype: float32
+      shape: [N]
+      description: Confidence scores
+    - name: class_ids
+      dtype: int32
+      shape: [N]
+      description: Class indices
+    - name: class_names
+      dtype: string
+      shape: [N]
+      description: Class names (from COCO or custom)
+
+postprocessing:
+  nms:
+    enabled: true
+    iou_threshold: 0.45
+    score_threshold: 0.25
+  max_detections: 300
+
+ros:
+  publishers:
+    - topic: detections
+      msg_type: DetectionArray
+      frame_id: camera_frame
+    - topic: visualization
+      msg_type: sensor_msgs/Image
+      description: Image with drawn bounding boxes
+
+  parameters:
+    - name: confidence_threshold
+      type: float
+      default: 0.25
+      description: Minimum confidence for detections
+    - name: iou_threshold
+      type: float
+      default: 0.45
+      description: IoU threshold for NMS
+    - name: classes
+      type: list
+      default: []
+      description: Filter to specific class IDs (empty = all)
+
+resources:
+  # Approximate VRAM usage in MB
+  vram:
+    yolo_v8n: 200
+    yolo_v8s: 400
+    yolo_v8m: 800
+    yolo_v8l: 1200
+    yolo_v8x: 1800

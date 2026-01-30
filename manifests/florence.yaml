@@ -1,0 +1,138 @@
+# Florence-2 Model Manifest
+# Unified vision model: detection, captioning, segmentation, OCR
+
+model:
+  name: florence
+  family: florence
+  variants:
+    - florence_2_base
+    - florence_2_large
+    - florence_2_base_ft  # fine-tuned variants
+    - florence_2_large_ft
+  default_variant: florence_2_large
+
+source:
+  type: huggingface
+  repo: microsoft/Florence-2-large
+  alternatives:
+    - microsoft/Florence-2-base
+    - microsoft/Florence-2-large-ft
+    - microsoft/Florence-2-base-ft
+
+input:
+  image:
+    type: image
+    format: rgb
+    preprocessing:
+      resize:
+        method: resize
+        target_size: [768, 768]
+      normalize:
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
+        scale: 255.0
+
+  task:
+    type: enum
+    options:
+      - caption              # <CAPTION>
+      - detailed_caption    # <DETAILED_CAPTION>
+      - more_detailed_caption  # <MORE_DETAILED_CAPTION>
+      - od                   # <OD> object detection
+      - dense_region_caption # <DENSE_REGION_CAPTION>
+      - region_proposal     # <REGION_PROPOSAL>
+      - caption_to_phrase_grounding  # <CAPTION_TO_PHRASE_GROUNDING>
+      - referring_expression_segmentation  # <REFERRING_EXPRESSION_SEGMENTATION>
+      - region_to_segmentation  # <REGION_TO_SEGMENTATION>
+      - open_vocabulary_detection  # <OPEN_VOCABULARY_DETECTION>
+      - region_to_category  # <REGION_TO_CATEGORY>
+      - region_to_description  # <REGION_TO_DESCRIPTION>
+      - ocr                 # <OCR>
+      - ocr_with_region     # <OCR_WITH_REGION>
+    default: od
+
+  text_input:
+    type: text
+    format: string
+    description: Optional text for grounding/referring tasks
+    required_for:
+      - caption_to_phrase_grounding
+      - referring_expression_segmentation
+      - open_vocabulary_detection
+
+output:
+  type: multi_task
+  fields:
+    # Detection output
+    - name: boxes
+      dtype: float32
+      shape: [N, 4]
+      tasks: [od, caption_to_phrase_grounding, open_vocabulary_detection, ocr_with_region]
+    - name: labels
+      dtype: string
+      shape: [N]
+      tasks: [od, caption_to_phrase_grounding, open_vocabulary_detection]
+    # Captioning output
+    - name: caption
+      dtype: string
+      shape: [1]
+      tasks: [caption, detailed_caption, more_detailed_caption, dense_region_caption]
+    # Segmentation output
+    - name: polygons
+      dtype: float32
+      shape: [N, M, 2]
+      tasks: [referring_expression_segmentation, region_to_segmentation]
+    # OCR output
+    - name: text
+      dtype: string
+      shape: [N]
+      tasks: [ocr, ocr_with_region]
+
+ros:
+  publishers:
+    - topic: detections
+      msg_type: DetectionArray
+      description: Object detections (when using detection tasks)
+    - topic: caption
+      msg_type: std_msgs/String
+      description: Image caption (when using caption tasks)
+    - topic: ocr_text
+      msg_type: std_msgs/String
+      description: Extracted text (when using OCR tasks)
+    - topic: visualization
+      msg_type: sensor_msgs/Image
+      description: Annotated image
+
+  subscribers:
+    - topic: task
+      msg_type: std_msgs/String
+      description: Change active task
+    - topic: text_input
+      msg_type: std_msgs/String
+      description: Text input for grounding tasks
+
+  services:
+    - name: infer
+      srv_type: Infer
+      description: Run inference with specified task and optional text
+
+  parameters:
+    - name: default_task
+      type: string
+      default: od
+      description: Default task to run
+    - name: num_beams
+      type: int
+      default: 3
+      description: Beam search width for generation
+    - name: max_new_tokens
+      type: int
+      default: 1024
+      description: Maximum tokens to generate
+
+resources:
+  vram:
+    florence_2_base: 2000
+    florence_2_large: 4000
+    florence_2_base_ft: 2000
+    florence_2_large_ft: 4000

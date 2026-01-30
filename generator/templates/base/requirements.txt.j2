@@ -1,0 +1,6 @@
+{% if torch_index_url %}
+--extra-index-url {{ torch_index_url }}
+{% endif %}
+{% for dep in pip_deps %}
+{{ dep }}
+{% endfor %}

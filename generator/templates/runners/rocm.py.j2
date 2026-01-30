@@ -1,0 +1,35 @@
+"""ROCm inference runner for {{ model_name }}.
+
+ROCm uses the same PyTorch API as CUDA — the difference is the torch build.
+"""
+
+import torch
+from .model import {{ model_class }}
+
+
+class {{ runner_class }}:
+    def __init__(self, node):
+        self.node = node
+        # ROCm devices appear as 'cuda' in PyTorch
+        self.device = torch.device('cuda:{{ device_id }}')
+        self.model = {{ model_class }}(node)
+        self.model.load(self.device)
+        node.get_logger().info(f'{{ runner_class }}: loaded on {self.device} (ROCm)')
+
+{% if model_family == "ultralytics" %}
+    def infer(self, image):
+        raw = self.model.predict(image)
+        return self.model.postprocess(raw)
+{% elif has_text_input %}
+    def infer(self, image, text=None):
+        inputs = self.model.preprocess(image, text=text)
+        with torch.no_grad():
+            outputs = self.model.forward(inputs)
+        return self.model.postprocess(outputs, original_size=image.shape[:2])
+{% else %}
+    def infer(self, image):
+        inputs = self.model.preprocess(image)
+        with torch.no_grad():
+            outputs = self.model.forward(inputs)
+        return self.model.postprocess(outputs, original_size=image.shape[:2])
+{% endif %}

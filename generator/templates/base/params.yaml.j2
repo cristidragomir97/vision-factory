@@ -1,0 +1,6 @@
+{{ node_name }}:
+  ros__parameters:
+    input_topic: "{{ input_topic }}"
+{% for param in parameters %}
+    {{ param.name }}: {{ param.default | yaml_repr }}
+{% endfor %}

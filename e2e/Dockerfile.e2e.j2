@@ -1,0 +1,65 @@
+FROM ros:{{ ros_distro }}-ros-base
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# System deps
+RUN apt-get update && apt-get install -y \
+    python3-pip \
+    python3-opencv \
+{% if input_source == "rosbag" %}
+    ros-{{ ros_distro }}-rosbag2-storage-default-plugins \
+    ros-{{ ros_distro }}-rosbag2-transport \
+{% elif input_source == "usb_cam" %}
+    ros-{{ ros_distro }}-usb-cam \
+{% endif %}
+{% if enable_rqt %}
+    ros-{{ ros_distro }}-rqt \
+    ros-{{ ros_distro }}-rqt-image-view \
+    ros-{{ ros_distro }}-rqt-topic \
+{% endif %}
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps
+COPY {{ package_name }}/requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy generated ROS2 package
+WORKDIR /ros_ws/src
+COPY {{ package_name }}/ {{ package_name }}/
+
+# Build
+WORKDIR /ros_ws
+RUN . /opt/ros/{{ ros_distro }}/setup.sh && \
+    colcon build --packages-select {{ package_name }}
+
+{% if input_source == "rosbag" %}
+# Copy test rosbag
+COPY test_bag/ /test_data/bag/
+{% endif %}
+
+# Copy test harness
+COPY test_harness.py /test_harness.py
+
+# Entrypoint
+COPY <<'ENTRYPOINT' /entrypoint.sh
+#!/bin/bash
+set -e
+source /opt/ros/{{ ros_distro }}/setup.bash
+source /ros_ws/install/setup.bash
+exec "$@"
+ENTRYPOINT
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["python3", "/test_harness.py", \
+     "--package", "{{ package_name }}", \
+     "--node", "{{ node_name }}", \
+     "--input-source", "{{ input_source }}", \
+{% if input_source == "rosbag" %}
+     "--bag", "/test_data/bag", \
+{% endif %}
+{% if enable_rqt %}
+     "--rqt", \
+{% endif %}
+     "--output-topic", "{{ output_topic }}", \
+     "--duration", "{{ duration }}"]

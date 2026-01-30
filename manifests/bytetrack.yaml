@@ -1,0 +1,117 @@
+# ByteTrack Model Manifest
+# Multi-object tracking
+
+model:
+  name: bytetrack
+  family: tracking
+  variants:
+    - bytetrack
+  default_variant: bytetrack
+
+source:
+  type: github
+  repo: ifzhang/ByteTrack
+  note: ByteTrack is tracking-only, requires a detector
+
+input:
+  type: detections
+  format: xyxy
+  description: Requires detections from upstream detector (YOLO, etc.)
+  fields:
+    - name: boxes
+      dtype: float32
+      shape: [N, 4]
+      description: Bounding boxes from detector
+    - name: scores
+      dtype: float32
+      shape: [N]
+      description: Detection confidence scores
+    - name: class_ids
+      dtype: int32
+      shape: [N]
+      description: Class IDs (optional, for class-aware tracking)
+
+output:
+  type: tracked_objects
+  fields:
+    - name: boxes
+      dtype: float32
+      shape: [M, 4]
+      description: Tracked object bounding boxes
+    - name: track_ids
+      dtype: int64
+      shape: [M]
+      description: Unique track IDs (persistent across frames)
+    - name: scores
+      dtype: float32
+      shape: [M]
+      description: Track confidence
+    - name: class_ids
+      dtype: int32
+      shape: [M]
+      description: Class IDs
+
+tracker_config:
+  # Track matching thresholds
+  track_thresh: 0.5        # High confidence threshold for first association
+  track_buffer: 30         # Frames to keep lost tracks
+  match_thresh: 0.8        # IoU threshold for matching
+  # Low score detection handling (ByteTrack's key feature)
+  low_thresh: 0.1          # Low confidence threshold for second association
+  # New track initialization
+  new_track_thresh: 0.6    # Minimum score to start new track
+
+ros:
+  publishers:
+    - topic: tracked_objects
+      msg_type: TrackedObjectArray
+      frame_id: camera_frame
+      description: Tracked objects with persistent IDs
+    - topic: visualization
+      msg_type: sensor_msgs/Image
+      encoding: rgb8
+      description: Image with track IDs and trails
+
+  subscribers:
+    - topic: detections
+      msg_type: DetectionArray
+      description: Input detections from detector
+
+  parameters:
+    - name: track_thresh
+      type: float
+      default: 0.5
+      description: High confidence detection threshold
+    - name: low_thresh
+      type: float
+      default: 0.1
+      description: Low confidence threshold for byte association
+    - name: track_buffer
+      type: int
+      default: 30
+      description: Frames to keep lost tracks
+    - name: match_thresh
+      type: float
+      default: 0.8
+      description: IoU matching threshold
+    - name: detector_model
+      type: string
+      default: yolo_v8
+      description: Which detector to use upstream
+    - name: track_classes
+      type: list
+      default: []
+      description: Only track specific classes (empty = all)
+    - name: draw_trails
+      type: bool
+      default: true
+      description: Draw motion trails in visualization
+    - name: trail_length
+      type: int
+      default: 30
+      description: Number of frames for trail history
+
+resources:
+  vram:
+    bytetrack: 50  # Minimal - tracking is CPU-based
+  note: VRAM usage depends on detector, not tracker

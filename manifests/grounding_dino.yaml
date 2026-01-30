@@ -1,0 +1,100 @@
+# Grounding DINO Model Manifest
+# Open-set object detection with text prompts
+
+model:
+  name: grounding_dino
+  family: dino
+  variants:
+    - grounding_dino_tiny
+    - grounding_dino_base
+  default_variant: grounding_dino_base
+
+source:
+  type: huggingface
+  repo: IDEA-Research/grounding-dino-base
+  alternatives:
+    - IDEA-Research/grounding-dino-tiny
+
+input:
+  primary:
+    type: image
+    format: rgb
+    preprocessing:
+      resize:
+        method: resize_longest
+        target_size: 800
+        max_size: 1333
+      normalize:
+        mean: [0.485, 0.456, 0.406]
+        std: [0.229, 0.224, 0.225]
+        scale: 255.0
+
+  secondary:
+    type: text
+    format: string
+    description: Text prompt describing objects to detect
+    preprocessing:
+      tokenizer: bert-base-uncased
+      max_length: 256
+
+output:
+  type: detections
+  format: cxcywh  # center-x, center-y, width, height (normalized)
+  fields:
+    - name: boxes
+      dtype: float32
+      shape: [N, 4]
+      description: Bounding boxes in cxcywh format (normalized 0-1)
+    - name: scores
+      dtype: float32
+      shape: [N]
+      description: Confidence scores
+    - name: phrases
+      dtype: string
+      shape: [N]
+      description: Matched text phrases
+
+postprocessing:
+  nms:
+    enabled: true
+    iou_threshold: 0.5
+  box_threshold: 0.35
+  text_threshold: 0.25
+
+ros:
+  publishers:
+    - topic: detections
+      msg_type: DetectionArray
+      frame_id: camera_frame
+    - topic: visualization
+      msg_type: sensor_msgs/Image
+      description: Image with labeled bounding boxes
+
+  subscribers:
+    - topic: prompt
+      msg_type: std_msgs/String
+      description: Dynamic text prompt updates
+
+  services:
+    - name: detect_objects
+      srv_type: Infer
+      description: One-shot detection with custom prompt
+
+  parameters:
+    - name: default_prompt
+      type: string
+      default: "person . car . dog . cat"
+      description: Default text prompt (phrases separated by ' . ')
+    - name: box_threshold
+      type: float
+      default: 0.35
+      description: Minimum box confidence
+    - name: text_threshold
+      type: float
+      default: 0.25
+      description: Minimum text-box matching confidence
+
+resources:
+  vram:
+    grounding_dino_tiny: 1500
+    grounding_dino_base: 3000

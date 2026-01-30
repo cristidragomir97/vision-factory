@@ -1,0 +1,99 @@
+# Depth Anything Model Manifest
+# Monocular depth estimation
+
+model:
+  name: depth_anything
+  family: depth
+  variants:
+    - depth_anything_v2_vits
+    - depth_anything_v2_vitb
+    - depth_anything_v2_vitl
+    - depth_anything_v1_vits
+    - depth_anything_v1_vitb
+    - depth_anything_v1_vitl
+  default_variant: depth_anything_v2_vitb
+
+source:
+  type: huggingface
+  repo: depth-anything/Depth-Anything-V2-Base
+  alternatives:
+    - depth-anything/Depth-Anything-V2-Small
+    - depth-anything/Depth-Anything-V2-Large
+
+input:
+  type: image
+  format: rgb
+  preprocessing:
+    resize:
+      method: resize
+      target_size: [518, 518]  # v2 default
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+      scale: 255.0
+
+output:
+  type: depth_map
+  format: relative  # Values are relative, not metric
+  fields:
+    - name: depth
+      dtype: float32
+      shape: [H, W]
+      description: Relative depth map (higher = further)
+    - name: depth_colored
+      dtype: uint8
+      shape: [H, W, 3]
+      description: Colorized depth visualization
+
+postprocessing:
+  # Resize depth map back to original image size
+  resize_to_original: true
+  # Invert so closer = higher value (optional)
+  invert: false
+  # Colormap for visualization
+  colormap: turbo  # turbo, viridis, magma, inferno
+
+ros:
+  publishers:
+    - topic: depth
+      msg_type: sensor_msgs/Image
+      encoding: 32FC1
+      frame_id: camera_frame
+      description: Raw depth map as float32
+    - topic: depth_colored
+      msg_type: sensor_msgs/Image
+      encoding: rgb8
+      frame_id: camera_frame
+      description: Colorized depth visualization
+    - topic: pointcloud
+      msg_type: sensor_msgs/PointCloud2
+      frame_id: camera_frame
+      description: Point cloud (requires camera intrinsics)
+
+  parameters:
+    - name: publish_colored
+      type: bool
+      default: true
+      description: Publish colorized visualization
+    - name: publish_pointcloud
+      type: bool
+      default: false
+      description: Generate point cloud (needs camera_info)
+    - name: colormap
+      type: string
+      default: turbo
+      description: Colormap for visualization
+    - name: min_depth
+      type: float
+      default: 0.0
+      description: Clip minimum depth value
+    - name: max_depth
+      type: float
+      default: 1.0
+      description: Clip maximum depth value
+
+resources:
+  vram:
+    depth_anything_v2_vits: 500
+    depth_anything_v2_vitb: 1000
+    depth_anything_v2_vitl: 2000

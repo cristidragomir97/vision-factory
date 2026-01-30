@@ -1,0 +1,31 @@
+"""OpenVINO inference runner for {{ model_name }}.
+
+Runs inference on CPU/iGPU using OpenVINO Runtime.
+"""
+
+from .model import {{ model_class }}
+
+
+class {{ runner_class }}:
+    def __init__(self, node):
+        self.node = node
+        self.model = {{ model_class }}(node)
+        # OpenVINO will handle device placement
+        self.model.load(device=None)
+        node.get_logger().info('{{ runner_class }}: loaded (OpenVINO)')
+
+{% if model_family == "ultralytics" %}
+    def infer(self, image):
+        raw = self.model.predict(image)
+        return self.model.postprocess(raw)
+{% elif has_text_input %}
+    def infer(self, image, text=None):
+        inputs = self.model.preprocess(image, text=text)
+        outputs = self.model.forward(inputs)
+        return self.model.postprocess(outputs, original_size=image.shape[:2])
+{% else %}
+    def infer(self, image):
+        inputs = self.model.preprocess(image)
+        outputs = self.model.forward(inputs)
+        return self.model.postprocess(outputs, original_size=image.shape[:2])
+{% endif %}

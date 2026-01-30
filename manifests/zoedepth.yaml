@@ -1,0 +1,93 @@
+# ZoeDepth Model Manifest
+# Metric depth estimation (actual distance in meters)
+
+model:
+  name: zoedepth
+  family: depth
+  variants:
+    - zoedepth_n   # NYU indoor
+    - zoedepth_k   # KITTI outdoor
+    - zoedepth_nk  # Combined
+  default_variant: zoedepth_nk
+
+source:
+  type: huggingface
+  repo: Intel/zoedepth-nyu-kitti
+  alternatives:
+    - Intel/zoedepth-nyu
+    - Intel/zoedepth-kitti
+
+input:
+  type: image
+  format: rgb
+  preprocessing:
+    resize:
+      method: resize
+      target_size: [384, 512]  # height x width
+    normalize:
+      mean: [0.485, 0.456, 0.406]
+      std: [0.229, 0.224, 0.225]
+      scale: 255.0
+
+output:
+  type: depth_map
+  format: metric  # Actual distance in meters
+  fields:
+    - name: depth
+      dtype: float32
+      shape: [H, W]
+      description: Metric depth map in meters
+      range:
+        indoor: [0.001, 10.0]   # NYU range
+        outdoor: [0.001, 80.0]  # KITTI range
+    - name: depth_colored
+      dtype: uint8
+      shape: [H, W, 3]
+      description: Colorized depth visualization
+
+postprocessing:
+  resize_to_original: true
+  colormap: turbo
+  clip_min: 0.001
+  clip_max: 80.0
+
+ros:
+  publishers:
+    - topic: depth_metric
+      msg_type: sensor_msgs/Image
+      encoding: 32FC1
+      frame_id: camera_frame
+      description: Metric depth in meters
+    - topic: depth_colored
+      msg_type: sensor_msgs/Image
+      encoding: rgb8
+      frame_id: camera_frame
+    - topic: pointcloud
+      msg_type: sensor_msgs/PointCloud2
+      frame_id: camera_frame
+      description: Colored point cloud with metric depth
+
+  subscribers:
+    - topic: camera_info
+      msg_type: sensor_msgs/CameraInfo
+      description: Camera intrinsics for point cloud generation
+
+  parameters:
+    - name: domain
+      type: string
+      default: auto
+      description: "Domain hint: indoor, outdoor, or auto"
+    - name: max_depth
+      type: float
+      default: 10.0
+      description: Maximum depth to publish (meters)
+    - name: publish_pointcloud
+      type: bool
+      default: true
+      description: Generate point cloud from depth
+
+resources:
+  vram:
+    zoedepth_n: 2000
+    zoedepth_k: 2000
+    zoedepth_nk: 2500
