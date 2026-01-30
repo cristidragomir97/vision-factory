@@ -1,11 +1,22 @@
-FROM ros:{{ ros_distro }}-ros-base
+{% if backend == "cuda" and cuda_version %}
+FROM nvidia/cuda:{{ cuda_version }}-cudnn-devel-{{ ubuntu_version }}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# System deps
+# Install ROS2 {{ ros_distro }} on top of CUDA base
 RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    curl \
+    && add-apt-repository universe \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update && apt-get install -y \
+    ros-{{ ros_distro }}-ros-base \
+    python3-colcon-common-extensions \
     python3-pip \
     python3-opencv \
+    ros-{{ ros_distro }}-vision-msgs \
+    ros-{{ ros_distro }}-cv-bridge \
 {% if input_source == "rosbag" %}
     ros-{{ ros_distro }}-rosbag2-storage-default-plugins \
     ros-{{ ros_distro }}-rosbag2-transport \
@@ -18,48 +29,34 @@ RUN apt-get update && apt-get install -y \
     ros-{{ ros_distro }}-rqt-topic \
 {% endif %}
     && rm -rf /var/lib/apt/lists/*
+{% else %}
+FROM ros:{{ ros_distro }}-ros-base
 
-# Python deps
-COPY {{ package_name }}/requirements.txt /tmp/requirements.txt
-RUN pip3 install --no-cache-dir -r /tmp/requirements.txt
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Copy generated ROS2 package
-WORKDIR /ros_ws/src
-COPY {{ package_name }}/ {{ package_name }}/
-
-# Build
-WORKDIR /ros_ws
-RUN . /opt/ros/{{ ros_distro }}/setup.sh && \
-    colcon build --packages-select {{ package_name }}
-
+# System deps
+RUN apt-get update && apt-get install -y \
+    python3-colcon-common-extensions \
+    python3-pip \
+    python3-opencv \
+    ros-{{ ros_distro }}-vision-msgs \
+    ros-{{ ros_distro }}-cv-bridge \
 {% if input_source == "rosbag" %}
-# Copy test rosbag
-COPY test_bag/ /test_data/bag/
-{% endif %}
-
-# Copy test harness
-COPY test_harness.py /test_harness.py
-
-# Entrypoint
-COPY <<'ENTRYPOINT' /entrypoint.sh
-#!/bin/bash
-set -e
-source /opt/ros/{{ ros_distro }}/setup.bash
-source /ros_ws/install/setup.bash
-exec "$@"
-ENTRYPOINT
-RUN chmod +x /entrypoint.sh
-
-ENTRYPOINT ["/entrypoint.sh"]
-CMD ["python3", "/test_harness.py", \
-     "--package", "{{ package_name }}", \
-     "--node", "{{ node_name }}", \
-     "--input-source", "{{ input_source }}", \
-{% if input_source == "rosbag" %}
-     "--bag", "/test_data/bag", \
+    ros-{{ ros_distro }}-rosbag2-storage-default-plugins \
+    ros-{{ ros_distro }}-rosbag2-transport \
+{% elif input_source == "usb_cam" %}
+    ros-{{ ros_distro }}-usb-cam \
 {% endif %}
 {% if enable_rqt %}
-     "--rqt", \
+    ros-{{ ros_distro }}-rqt \
+    ros-{{ ros_distro }}-rqt-image-view \
+    ros-{{ ros_distro }}-rqt-topic \
 {% endif %}
-     "--output-topic", "{{ output_topic }}", \
-     "--duration", "{{ duration }}"]
+    && rm -rf /var/lib/apt/lists/*
+{% endif %}
+
+# Pre-install pip deps so they're cached in the image layer
+COPY requirements.txt /tmp/requirements.txt
+RUN pip3 install --no-cache-dir -r /tmp/requirements.txt --break-system-packages
+
+WORKDIR /ros_ws

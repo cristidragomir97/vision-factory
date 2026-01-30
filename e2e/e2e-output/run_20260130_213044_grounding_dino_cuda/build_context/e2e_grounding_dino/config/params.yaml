@@ -1,0 +1,6 @@
+e2e_grounding_dino_node:
+  ros__parameters:
+    input_topic: "/camera/image_raw"
+    default_prompt: "person . car . dog . cat"
+    box_threshold: 0.35
+    text_threshold: 0.25

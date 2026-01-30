@@ -1,0 +1,2 @@
+[console_scripts]
+vision-gen = generator.cli:main

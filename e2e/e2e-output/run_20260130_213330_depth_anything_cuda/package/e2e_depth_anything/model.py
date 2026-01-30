@@ -1,0 +1,77 @@
+"""Depth Anything v2 model via HuggingFace Transformers."""
+
+import cv2
+import numpy as np
+import torch
+from transformers import AutoImageProcessor, AutoModelForDepthEstimation
+
+
+class DepthModel:
+    """Monocular depth estimation using Depth Anything v2.
+
+    Produces relative depth maps (higher value = further away).
+    """
+
+    VARIANT_MAP = {
+        "depth_anything_v2_vits": "depth-anything/Depth-Anything-V2-Small-hf",
+        "depth_anything_v2_vitb": "depth-anything/Depth-Anything-V2-Base-hf",
+        "depth_anything_v2_vitl": "depth-anything/Depth-Anything-V2-Large-hf",
+        "depth_anything_v1_vits": "LiheYoung/depth-anything-small-hf",
+        "depth_anything_v1_vitb": "LiheYoung/depth-anything-base-hf",
+        "depth_anything_v1_vitl": "LiheYoung/depth-anything-large-hf",
+    }
+
+    COLORMAPS = {
+        "turbo": cv2.COLORMAP_TURBO,
+        "viridis": cv2.COLORMAP_VIRIDIS,
+        "magma": cv2.COLORMAP_MAGMA,
+        "inferno": cv2.COLORMAP_INFERNO,
+    }
+
+    def __init__(self, node):
+        self.node = node
+        self.publish_colored = node.get_parameter('publish_colored').value
+        self.colormap_name = node.get_parameter('colormap').value
+        self.colormap = self.COLORMAPS.get(self.colormap_name, cv2.COLORMAP_TURBO)
+
+    def load(self, device):
+        repo = self.VARIANT_MAP.get("depth_anything_v2_vitb")
+        if repo is None:
+            raise ValueError(f"Unknown variant: depth_anything_v2_vitb")
+
+        self.processor = AutoImageProcessor.from_pretrained(repo)
+        self.model = AutoModelForDepthEstimation.from_pretrained(repo).to(device)
+        self.model.eval()
+        self.device = device
+
+    def preprocess(self, image):
+        """Convert BGR -> RGB and run HF processor."""
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        inputs = self.processor(images=rgb, return_tensors="pt")
+        return {k: v.to(self.device) for k, v in inputs.items()}
+
+    def forward(self, inputs):
+        """Run model forward pass."""
+        return self.model(**inputs)
+
+    def postprocess(self, outputs, original_size=None):
+        """Normalize depth and optionally colorize."""
+        depth = outputs.predicted_depth.squeeze().cpu().numpy()
+
+        # Resize to original image size
+        if original_size is not None:
+            h, w = original_size
+            depth = cv2.resize(depth, (w, h), interpolation=cv2.INTER_LINEAR)
+
+        # Normalize to 0-1
+        d_min, d_max = depth.min(), depth.max()
+        depth_norm = (depth - d_min) / (d_max - d_min + 1e-8)
+
+        result = {'depth': depth_norm.astype(np.float32)}
+
+        if self.publish_colored:
+            depth_u8 = (depth_norm * 255).astype(np.uint8)
+            colored = cv2.applyColorMap(depth_u8, self.colormap)
+            result['depth_colored'] = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
+
+        return result

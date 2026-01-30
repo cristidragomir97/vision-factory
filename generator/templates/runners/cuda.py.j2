@@ -1,5 +1,6 @@
 """CUDA inference runner for {{ model_name }}."""
 
+import time
 import torch
 from .model import {{ model_class }}
 
@@ -7,10 +8,28 @@ from .model import {{ model_class }}
 class {{ runner_class }}:
     def __init__(self, node):
         self.node = node
+        self.logger = node.get_logger()
+        self.logger.info('{{ runner_class }}: initializing...')
+
+        self.logger.info('{{ runner_class }}: detecting CUDA device...')
         self.device = torch.device('cuda:{{ device_id }}')
+        self.logger.info(f'{{ runner_class }}: using device {self.device}')
+        self.logger.info(f'{{ runner_class }}: CUDA available={torch.cuda.is_available()}, '
+                         f'device_count={torch.cuda.device_count()}')
+        if torch.cuda.is_available():
+            self.logger.info(f'{{ runner_class }}: GPU name={torch.cuda.get_device_name({{ device_id }})}')
+
+        self.logger.info('{{ runner_class }}: creating model instance...')
+        t0 = time.monotonic()
         self.model = {{ model_class }}(node)
+        self.logger.info(f'{{ runner_class }}: model instance created in {time.monotonic() - t0:.2f}s')
+
+        self.logger.info('{{ runner_class }}: loading weights to device...')
+        t0 = time.monotonic()
         self.model.load(self.device)
-        node.get_logger().info(f'{{ runner_class }}: loaded on {self.device}')
+        self.logger.info(f'{{ runner_class }}: weights loaded in {time.monotonic() - t0:.2f}s')
+
+        self.logger.info('{{ runner_class }}: ready.')
 
 {% if model_family == "ultralytics" %}
     def infer(self, image):

@@ -137,6 +137,7 @@ class Generator:
         base_templates = {
             "package.xml": "base/package.xml.j2",
             "setup.py": "base/setup.py.j2",
+            "setup.cfg": "base/setup.cfg.j2",
             "requirements.txt": "base/requirements.txt.j2",
             "Dockerfile": "base/Dockerfile.j2",
             "README.md": "base/README.md.j2",

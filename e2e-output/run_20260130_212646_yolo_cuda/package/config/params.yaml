@@ -1,0 +1,6 @@
+e2e_yolo_node:
+  ros__parameters:
+    input_topic: "/camera/image_raw"
+    confidence_threshold: 0.25
+    iou_threshold: 0.45
+    classes: []

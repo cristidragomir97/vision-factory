@@ -1,5 +1,6 @@
 """YOLO model via Ultralytics API."""
 
+import time
 from ultralytics import YOLO
 
 
@@ -25,15 +26,23 @@ class {{ model_class }}:
 
     def __init__(self, node):
         self.node = node
+        self.logger = node.get_logger()
         self.confidence = node.get_parameter('confidence_threshold').value
         self.iou = node.get_parameter('iou_threshold').value
         classes_param = node.get_parameter('classes').value
         self.classes = classes_param if classes_param else None
+        self.logger.info(f'YoloModel: conf={self.confidence}, iou={self.iou}, classes={self.classes}')
 
     def load(self, device):
         weights = self.WEIGHTS_MAP.get("{{ variant }}", "{{ variant }}.pt")
+        self.logger.info(f'YoloModel: loading weights "{weights}"...')
+        t0 = time.monotonic()
         self.model = YOLO(weights)
+        self.logger.info(f'YoloModel: YOLO("{weights}") loaded in {time.monotonic() - t0:.2f}s')
+        self.logger.info(f'YoloModel: moving model to {device}...')
+        t0 = time.monotonic()
         self.model.to(device)
+        self.logger.info(f'YoloModel: model.to({device}) done in {time.monotonic() - t0:.2f}s')
 
     def predict(self, image):
         """Run Ultralytics inference (handles preprocessing internally)."""
