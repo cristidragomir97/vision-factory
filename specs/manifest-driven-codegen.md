@@ -1,106 +1,168 @@
-# Plan: Eliminate Per-Model Templates via Manifest-Driven Codegen
+# Plan: Reduce Model Template Boilerplate via Base Classes
 
 ## Goal
-Replace individual `model_templates/models/{model}.py.j2` files with a **single generic `model.py.j2`** template driven by a new `codegen` section in each manifest YAML. Adding a new model should only require writing a manifest — no new `.py.j2` file.
+Extract shared infrastructure (load, preprocess, forward) into base classes so per-model templates only define `postprocess()` — the truly unique part. Add `codegen` manifest fields to drive the shared parts declaratively.
 
-## Key Insight
-The three existing model templates differ in:
-1. **Imports** — ultralytics vs various `transformers.Auto*` classes
-2. **Variant map** — weight filenames vs HF repo IDs
-3. **Load pattern** — `YOLO(weights).to(device)` vs `AutoProcessor + AutoModel.from_pretrained`
-4. **Pipeline shape** — ultralytics `predict→postprocess` vs HF `preprocess→forward→postprocess`
-5. **Postprocessing logic** — extracting boxes from ultralytics results vs HF processor post-processing vs depth normalization
+## What Changes
 
-All of these can be parameterized via manifest fields and a finite set of **postprocess patterns** in the template.
+### 1. New base class templates
 
-## New Manifest `codegen` Section
+Create two base class templates that handle the repetitive parts:
 
-Each manifest gets a `codegen` block. Example (grounding_dino):
+**`generator/templates/base/base_model_hf.py.j2`** — HuggingFace base class:
+```python
+"""Base class for HuggingFace Transformers models."""
+import cv2
+import torch
 
-```yaml
-codegen:
-  variant_map:
-    grounding_dino_tiny: "IDEA-Research/grounding-dino-tiny"
-    grounding_dino_base: "IDEA-Research/grounding-dino-base"
+class HuggingFaceModelBase:
+    VARIANT_MAP = {}  # Override in subclass
 
-  imports:
-    - module: cv2
-    - module: numpy
-      alias: np
-    - module: torch
-    - module: transformers
-      names: [AutoProcessor, AutoModelForZeroShotObjectDetection]
+    def __init__(self, node):
+        self.node = node
+        self.logger = node.get_logger()
+        # Read all ROS parameters into self.<name>
+        {% for param in parameters %}
+        self.{{ param.name }} = node.get_parameter('{{ param.name }}').value
+        {% endfor %}
 
-  loading:
-    pattern: huggingface            # huggingface | ultralytics
-    processor_class: AutoProcessor
-    model_class: AutoModelForZeroShotObjectDetection
+    def load(self, device):
+        from transformers import {{ codegen.loading.processor_class }}, {{ codegen.loading.model_class }}
+        repo = self.VARIANT_MAP.get("{{ variant }}")
+        self.processor = {{ codegen.loading.processor_class }}.from_pretrained(repo)
+        self.model = {{ codegen.loading.model_class }}.from_pretrained(repo).to(device)
+        self.model.eval()
+        self.device = device
 
-  pipeline: preprocess_forward      # preprocess_forward | ultralytics_predict
-  has_text_input: true
-  preprocess_converts_bgr: true
+    def preprocess(self, image, **kwargs):
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        # text input handled if has_text_input
+        inputs = self.processor(images=rgb, **kwargs, return_tensors="pt")
+        return {k: v.to(self.device) for k, v in inputs.items()}
 
-  postprocess:
-    pattern: hf_grounded_detection  # finite enum of patterns
+    def forward(self, inputs):
+        return self.model(**inputs)
 ```
 
-## Postprocess Patterns (finite set)
+**`generator/templates/base/base_model_ultralytics.py.j2`** — Ultralytics base class:
+```python
+"""Base class for Ultralytics models."""
+from ultralytics import YOLO
 
-| Pattern | Models | What it does |
-|---------|--------|-------------|
-| `ultralytics_detect` | YOLO | `result.boxes.xyxy/conf/cls` extraction |
-| `hf_grounded_detection` | Grounding DINO | `processor.post_process_grounded_object_detection(...)` |
-| `hf_depth` | Depth Anything, ZoeDepth | `outputs.predicted_depth` → normalize → optional colormap |
+class UltralyticsModelBase:
+    VARIANT_MAP = {}
 
-New patterns (for future models not yet implemented) would be added to the same template file — one file to edit, not N.
+    def __init__(self, node):
+        self.node = node
+        self.logger = node.get_logger()
+        {% for param in parameters %}
+        self.{{ param.name }} = node.get_parameter('{{ param.name }}').value
+        {% endfor %}
 
-## Files to Modify
+    def load(self, device):
+        weights = self.VARIANT_MAP.get("{{ variant }}", "{{ variant }}.pt")
+        self.model = YOLO(weights)
+        self.model.to(device)
 
-### 1. `generator/manifest.py` — Add Pydantic models for `codegen`
-- `ImportSpec(module, names=[], alias="")`
-- `LoadingConfig(pattern, processor_class="", model_class="")`
-- `PostprocessConfig(pattern)`
-- `CodegenConfig(variant_map, imports, loading, pipeline, has_text_input, preprocess_converts_bgr, postprocess, constants={})`
-- Add `codegen: CodegenConfig | None = None` to `ModelManifest`
+    def predict(self, image):
+        return self.model(image, verbose=False, **self._predict_kwargs())
+```
 
-### 2. `generator/context.py` — Pass codegen to template context
-- Add `"codegen": manifest.codegen.model_dump() if manifest.codegen else None` to the context dict
-- When `codegen` is present, derive `has_text_input` and `model_family` from it instead of heuristics
+### 2. Add `codegen` section to manifests
 
-### 3. `generator/engine.py` — Fallback to generic template
-- Change `_render_all` model template resolution:
-  - If manifest has `codegen` → render `base/model.py.j2` (the new generic template)
-  - Else → try `models/{model}.py.j2` (legacy per-model template)
-  - Else → placeholder
+Minimal — just enough to drive the base class:
 
-### 4. `generator/templates/base/model.py.j2` — NEW generic template
-- Renders imports from `codegen.imports`
-- Generates `VARIANT_MAP` from `codegen.variant_map`
-- Generates `__init__` reading all `ros.parameters`
-- Generates `load()` branching on `codegen.loading.pattern`
-- Generates `predict()` for ultralytics or `preprocess()/forward()` for HF
-- Generates `postprocess()` branching on `codegen.postprocess.pattern`
-- Optional `constants` block (e.g. COLORMAPS for depth models)
+```yaml
+# In each manifest YAML:
+codegen:
+  variant_map:
+    variant_name: "weight_or_repo_id"
+  loading:
+    pattern: huggingface        # or: ultralytics
+    processor_class: AutoProcessor        # HF only
+    model_class: AutoModelForZeroShotObjectDetection  # HF only
+```
 
-### 5. `generator/templates/runners/cuda.py.j2` (and rocm, openvino)
-- Change branching from `model_family == "ultralytics"` to `codegen.pipeline == "ultralytics_predict"` (when codegen is present, fall back to old logic otherwise)
+### 3. Simplify per-model templates
 
-### 6. Manifests — Add `codegen` to the 3 implemented models
-- `manifests/yolo.yaml`
-- `manifests/grounding_dino.yaml`
-- `manifests/depth_anything.yaml`
+Each model template shrinks to just the unique part — `postprocess()` and any model-specific extras:
 
-### 7. Delete old per-model templates
-- `model_templates/models/yolo.py.j2`
-- `model_templates/models/grounding_dino.py.j2`
-- `model_templates/models/depth_anything.py.j2`
+**yolo.py.j2** (before: 71 lines, after: ~20 lines):
+```python
+from .base_model import UltralyticsModelBase
 
-## Migration Strategy
+class {{ model_class }}(UltralyticsModelBase):
+    VARIANT_MAP = { {{ codegen variant_map entries }} }
 
-Do it all at once for the 3 existing models (they're small). The generated `model.py` output should be functionally equivalent to what the old per-model templates produced.
+    def _predict_kwargs(self):
+        return dict(conf=self.confidence_threshold, iou=self.iou_threshold,
+                    classes=self.classes if self.classes else None)
+
+    def postprocess(self, results):
+        result = results[0]
+        # ... extract boxes/scores/class_ids/class_names ...
+```
+
+**grounding_dino.py.j2** (before: 77 lines, after: ~30 lines):
+```python
+from .base_model import HuggingFaceModelBase
+
+class {{ model_class }}(HuggingFaceModelBase):
+    VARIANT_MAP = { {{ codegen variant_map entries }} }
+
+    def preprocess(self, image, text=None):
+        prompt = text if text is not None else self.default_prompt
+        inputs = super().preprocess(image, text=prompt)
+        self._last_input_ids = inputs.get("input_ids")  # needed for postprocess
+        return inputs
+
+    def postprocess(self, outputs, original_size=None):
+        # ... grounding DINO specific post-processing ...
+```
+
+**depth_anything.py.j2** (before: 78 lines, after: ~25 lines):
+```python
+from .base_model import HuggingFaceModelBase
+
+class {{ model_class }}(HuggingFaceModelBase):
+    VARIANT_MAP = { {{ codegen variant_map entries }} }
+
+    def postprocess(self, outputs, original_size=None):
+        # ... depth normalization + colormap ...
+```
+
+### 4. Files to modify
+
+| File | Change |
+|------|--------|
+| `generator/manifest.py` | Add `CodegenConfig` Pydantic model with `variant_map` and `loading` fields. Add optional `codegen` field to `ModelManifest` |
+| `generator/context.py` | Pass `codegen` dict into template context |
+| `generator/engine.py` | Render `base_model.py` from the appropriate base class template, add it to the generated package files |
+| `generator/templates/base/base_model_hf.py.j2` | **NEW** — HuggingFace base class template |
+| `generator/templates/base/base_model_ultralytics.py.j2` | **NEW** — Ultralytics base class template |
+| `model_templates/models/yolo.py.j2` | Simplify — inherit from UltralyticsModelBase, only define postprocess + predict kwargs |
+| `model_templates/models/grounding_dino.py.j2` | Simplify — inherit from HuggingFaceModelBase, only define postprocess + preprocess override |
+| `model_templates/models/depth_anything.py.j2` | Simplify — inherit from HuggingFaceModelBase, only define postprocess |
+| `manifests/yolo.yaml` | Add `codegen` section with variant_map + loading |
+| `manifests/grounding_dino.yaml` | Add `codegen` section with variant_map + loading |
+| `manifests/depth_anything.yaml` | Add `codegen` section with variant_map + loading |
+| `generator/templates/runners/cuda.py.j2` | No change needed — runner still calls model.predict/preprocess/forward/postprocess |
+
+### 5. Generated package structure (after)
+
+```
+e2e_yolo/
+├── e2e_yolo/
+│   ├── __init__.py
+│   ├── node.py          # unchanged
+│   ├── base_model.py    # NEW — generated from base class template
+│   ├── model.py         # simplified — just postprocess + overrides
+│   └── runner.py        # unchanged
+├── ...
+```
 
 ## Verification
 
-1. Generate the `e2e_yolo` package before and after, diff the output `model.py` — should be functionally equivalent
-2. Run `python3 e2e/run.py --verbose --model yolo --backend cuda --usb-cam --rqt --duration 30` to verify YOLO still works end-to-end
-3. Generate grounding_dino and depth_anything packages, verify they produce valid Python
+1. Generate `e2e_yolo` package, verify `model.py` imports from `base_model` and inference works
+2. Run `python3 e2e/run.py --verbose --model yolo --backend cuda --usb-cam --rqt --duration 30`
+3. Generate grounding_dino and depth_anything packages, verify valid Python output
