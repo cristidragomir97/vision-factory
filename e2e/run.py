@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """E2E test runner for vision-factory.
 
-Generates a ROS2 vision package, starts infrastructure via Docker Compose,
-runs the vision node container on a shared network, and produces a markdown
-report.
+Generates a ROS2 vision package, runs everything (vision node, camera,
+viz, rosboard) inside a single Docker container, and produces a markdown report.
 
 Usage:
     python e2e/run.py \
@@ -17,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -33,8 +33,6 @@ from generator.engine import Generator, GenerationError
 
 from config import (
     BASE_IMAGE_TAG,
-    COMPOSE_NETWORK,
-    COMPOSE_PROJECT,
     CUDA_VERSION,
     ROS_DISTRO,
 )
@@ -122,7 +120,7 @@ def _check_prerequisites(require_gpu: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Infrastructure helpers
+# Base image
 # ---------------------------------------------------------------------------
 
 def _ensure_base_image() -> None:
@@ -158,53 +156,6 @@ def _ensure_base_image() -> None:
         print("ERROR: Base image build failed", file=sys.stderr)
         sys.exit(1)
     print(f"Base image {BASE_IMAGE_TAG} built successfully.")
-
-
-def _start_infra(profiles: list[str]) -> None:
-    """Start infrastructure services via docker compose."""
-    if not profiles:
-        print("\n=== No compose profiles requested — skipping infra startup ===")
-        return
-
-    print(f"\n=== Starting infra services (profiles: {profiles}) ===")
-    print(f"    Compose file: {E2E_DIR / 'docker-compose.yaml'}")
-    print(f"    Project: {COMPOSE_PROJECT}")
-    print(f"    Network: {COMPOSE_NETWORK}")
-
-    cmd = [
-        "docker", "compose",
-        "-f", str(E2E_DIR / "docker-compose.yaml"),
-        "-p", COMPOSE_PROJECT,
-    ]
-    for p in profiles:
-        cmd += ["--profile", p]
-    cmd += ["up", "-d"]
-
-    result = _run_cmd(cmd, timeout=120)
-    if result.returncode != 0:
-        print("WARNING: docker compose up failed", file=sys.stderr)
-
-    # Show running containers for the project
-    _run_cmd([
-        "docker", "compose",
-        "-f", str(E2E_DIR / "docker-compose.yaml"),
-        "-p", COMPOSE_PROJECT,
-        "ps",
-    ])
-
-
-def _stop_infra() -> None:
-    """Stop and remove infrastructure services."""
-    print(f"\n=== Stopping infra services ===")
-    cmd = [
-        "docker", "compose",
-        "-f", str(E2E_DIR / "docker-compose.yaml"),
-        "-p", COMPOSE_PROJECT,
-        "down",
-    ]
-    result = _run_cmd(cmd, timeout=60)
-    if result.returncode != 0:
-        print("WARNING: docker compose down failed", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -265,8 +216,10 @@ def stage_docker_run(
     ros_distro: str,
     duration: float,
     require_gpu: bool,
+    enable_rosboard: bool,
+    video_device: str,
 ) -> tuple[StageResult, dict | None]:
-    """Run the e2e container on the shared network, build and test at runtime."""
+    """Run everything in a single container: vision node + camera + viz + rosboard."""
     print(f"\n=== Stage: Build & Inference ===")
     print(f"    package_name={package_name}")
     print(f"    node_name={node_name}")
@@ -276,8 +229,9 @@ def stage_docker_run(
     print(f"    ros_distro={ros_distro}")
     print(f"    duration={duration}s")
     print(f"    require_gpu={require_gpu}")
+    print(f"    enable_rosboard={enable_rosboard}")
+    print(f"    video_device={video_device}")
     print(f"    image={BASE_IMAGE_TAG}")
-    print(f"    network={COMPOSE_NETWORK}")
 
     stage = StageResult("Build & Inference")
     t0 = time.monotonic()
@@ -290,11 +244,17 @@ def stage_docker_run(
     print(f"    Copied test_harness.py -> {context_dir / 'test_harness.py'}")
     print(f"    Copied entrypoint.sh   -> {context_dir / 'entrypoint.sh'}")
 
+    # Copy viz_node.py if it exists
+    viz_node_src = E2E_DIR / "viz_node.py"
+    if viz_node_src.exists():
+        shutil.copy2(viz_node_src, context_dir / "viz_node.py")
+        print(f"    Copied viz_node.py     -> {context_dir / 'viz_node.py'}")
+
     pkg_path = work_dir.resolve()
     harness_path = (context_dir / "test_harness.py").resolve()
     entrypoint_path = (context_dir / "entrypoint.sh").resolve()
 
-    cmd = ["docker", "run", "--rm", "--network", COMPOSE_NETWORK]
+    cmd = ["docker", "run", "--rm"]
     if require_gpu:
         cmd += ["--gpus", "all"]
 
@@ -305,9 +265,22 @@ def stage_docker_run(
         "-v", f"{entrypoint_path}:/entrypoint.sh:ro",
     ]
 
+    # Mount viz_node.py into the container
+    viz_node_path = (context_dir / "viz_node.py").resolve()
+    if viz_node_path.exists():
+        cmd += ["-v", f"{viz_node_path}:/ros_ws/viz_node.py:ro"]
+
     # Mount rosbag if applicable
     if input_source == "rosbag" and rosbag_path:
         cmd += ["-v", f"{rosbag_path.resolve()}:/test_data/bag:ro"]
+
+    # Mount USB camera device if applicable
+    if input_source == "usb_cam":
+        cmd += ["--device", f"{video_device}:{video_device}"]
+
+    # Expose rosboard web UI
+    if enable_rosboard:
+        cmd += ["-p", "8888:8888"]
 
     # Pass config as env vars for the entrypoint
     cmd += [
@@ -329,6 +302,10 @@ def stage_docker_run(
     ]
     if input_source == "rosbag":
         harness_args += ["--bag", "/test_data/bag"]
+    if input_source == "usb_cam":
+        harness_args += ["--video-device", video_device]
+    if enable_rosboard:
+        harness_args.append("--rosboard")
 
     cmd += harness_args
 
@@ -337,8 +314,14 @@ def stage_docker_run(
     print(f"      {pkg_path} -> /ros_ws/src/{package_name}:ro")
     print(f"      {harness_path} -> /ros_ws/test_harness.py:ro")
     print(f"      {entrypoint_path} -> /entrypoint.sh:ro")
+    if viz_node_path.exists():
+        print(f"      {viz_node_path} -> /ros_ws/viz_node.py:ro")
     if input_source == "rosbag" and rosbag_path:
         print(f"      {rosbag_path.resolve()} -> /test_data/bag:ro")
+    if input_source == "usb_cam":
+        print(f"      device: {video_device}")
+    if enable_rosboard:
+        print(f"      rosboard: http://localhost:8888")
 
     result = _run_cmd(cmd, timeout=600)
     full_output = result.stdout + "\n" + result.stderr
@@ -393,7 +376,7 @@ def generate_report(
     variant: str,
     ros_distro: str,
     input_source: str = "rosbag",
-    enable_rqt: bool = False,
+    enable_rosboard: bool = False,
 ) -> str:
     """Generate a markdown report."""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -404,7 +387,7 @@ def generate_report(
         "",
         f"**Model:** {model} | **Backend:** {backend} | **Variant:** {variant}",
         f"**ROS Distro:** {ros_distro} | **Input:** {input_source}"
-        + (f" | **rqt:** yes" if enable_rqt else ""),
+        + (f" | **rosboard:** yes" if enable_rosboard else ""),
         f"**Date:** {now} | **Result:** {overall}",
         "",
         "## Stages",
@@ -425,7 +408,7 @@ def generate_report(
             "",
             f"- **Node started:** {harness_data.get('node_started', False)}",
             f"- **Node startup time:** {harness_data.get('node_startup_time_s', '-')}s",
-            f"- **Bag played:** {harness_data.get('bag_played', False)}",
+            f"- **Input active:** {harness_data.get('input_active', False)}",
             f"- **Messages received:** {harness_data.get('messages_received', 0)}",
             f"- **Output topic:** {harness_data.get('output_topic', '-')}",
             "",
@@ -486,9 +469,13 @@ def main():
     input_group.add_argument("--usb-cam", action="store_true",
                              help="Use usb_cam package as input (live webcam)")
 
+    # Camera device (only relevant with --usb-cam)
+    parser.add_argument("--video-device", default="/dev/video0",
+                        help="Video device path for usb_cam (default: /dev/video0)")
+
     # Visualization
-    parser.add_argument("--rqt", action="store_true",
-                        help="Open rqt_image_view on the output topic (requires X11)")
+    parser.add_argument("--rosboard", action="store_true",
+                        help="Start rosboard web UI on port 8888")
 
     args = parser.parse_args()
 
@@ -507,12 +494,12 @@ def main():
     print(f"  input_source: {input_source}")
     print(f"  rosbag:       {args.rosbag or 'N/A'}")
     print(f"  usb_cam:      {args.usb_cam}")
-    print(f"  rqt:          {args.rqt}")
+    print(f"  video_device: {args.video_device}")
+    print(f"  rosboard:     {args.rosboard}")
     print(f"  duration:     {args.duration}s")
     print(f"  output_dir:   {args.output_dir}")
     print(f"  base_image:   {BASE_IMAGE_TAG}")
     print(f"  cuda_version: {CUDA_VERSION}")
-    print(f"  network:      {COMPOSE_NETWORK}")
     print(f"  require_gpu:  {require_gpu}")
     print("=" * 60)
 
@@ -554,57 +541,42 @@ def main():
     # Ensure base image exists (build if needed)
     _ensure_base_image()
 
-    # Determine which compose profiles to start
-    profiles: list[str] = []
-    if args.usb_cam:
-        profiles.append("camera")
-    if args.usb_cam or args.rqt:
-        profiles.append("viz")
-    if args.rqt:
-        profiles.append("rqt")
+    # Stage 1: Generate
+    print(f"\n[1/2] Generating package: {package_name} ({args.model}/{variant}/{args.backend})")
+    s, pkg_dir = stage_generate(args.model, args.backend, variant, package_name, work_dir)
+    stages.append(s)
+    print(f"      {s.status} ({s.duration:.1f}s)")
+    if s.status != "PASS":
+        _finish(stages, harness_data, args, variant, input_source, run_dir)
+        return
 
-    try:
-        # Start infrastructure services
-        _start_infra(profiles)
+    # Save a copy of the generated package for inspection
+    pkg_copy = run_dir / "package"
+    shutil.copytree(work_dir / package_name, pkg_copy)
+    print(f"      Package saved to: {pkg_copy}")
 
-        # Stage 1: Generate
-        print(f"\n[1/2] Generating package: {package_name} ({args.model}/{variant}/{args.backend})")
-        s, pkg_dir = stage_generate(args.model, args.backend, variant, package_name, work_dir)
-        stages.append(s)
-        print(f"      {s.status} ({s.duration:.1f}s)")
-        if s.status != "PASS":
-            _finish(stages, harness_data, args, variant, input_source, run_dir)
-            return
-
-        # Save a copy of the generated package for inspection
-        pkg_copy = run_dir / "package"
-        shutil.copytree(work_dir / package_name, pkg_copy)
-        print(f"      Package saved to: {pkg_copy}")
-
-        # Stage 2: Build package + run inference (inside container on shared network)
-        mode_desc = "live webcam" if args.usb_cam else "rosbag"
-        if args.rqt:
-            mode_desc += " + rqt"
-        print(f"\n[2/2] Building & running ({mode_desc}, {args.duration}s)...")
-        s, harness_data = stage_docker_run(
-            work_dir=work_dir / package_name,
-            package_name=package_name,
-            node_name=node_name,
-            output_topic=output_topic,
-            input_source=input_source,
-            rosbag_path=args.rosbag,
-            ros_distro=args.ros_distro,
-            duration=args.duration,
-            require_gpu=require_gpu,
-        )
-        stages.append(s)
-        print(f"      {s.status} ({s.duration:.1f}s)")
-        if harness_data:
-            print(f"      Messages received: {harness_data.get('messages_received', 0)}")
-
-    finally:
-        # Always tear down infra
-        _stop_infra()
+    # Stage 2: Build package + run inference (everything in one container)
+    mode_desc = "live webcam" if args.usb_cam else "rosbag"
+    if args.rosboard:
+        mode_desc += " + rosboard"
+    print(f"\n[2/2] Building & running ({mode_desc}, {args.duration}s)...")
+    s, harness_data = stage_docker_run(
+        work_dir=work_dir / package_name,
+        package_name=package_name,
+        node_name=node_name,
+        output_topic=output_topic,
+        input_source=input_source,
+        rosbag_path=args.rosbag,
+        ros_distro=args.ros_distro,
+        duration=args.duration,
+        require_gpu=require_gpu,
+        enable_rosboard=args.rosboard,
+        video_device=args.video_device,
+    )
+    stages.append(s)
+    print(f"      {s.status} ({s.duration:.1f}s)")
+    if harness_data:
+        print(f"      Messages received: {harness_data.get('messages_received', 0)}")
 
     _finish(stages, harness_data, args, variant, input_source, run_dir)
 
@@ -619,7 +591,7 @@ def _finish(stages, harness_data, args, variant, input_source, run_dir: Path):
         variant=variant,
         ros_distro=args.ros_distro,
         input_source=input_source,
-        enable_rqt=args.rqt,
+        enable_rosboard=args.rosboard,
     )
 
     # Write report into the run directory
@@ -631,7 +603,7 @@ def _finish(stages, harness_data, args, variant, input_source, run_dir: Path):
     args.output_dir.mkdir(parents=True, exist_ok=True)
     latest_path = args.output_dir / "e2e-report.md"
     latest_path.write_text(report)
-    print(f"Latest report symlink: {latest_path}")
+    print(f"Latest report: {latest_path}")
 
     overall = all(s.status == "PASS" for s in stages)
     print(f"\n{'=' * 60}")

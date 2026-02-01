@@ -1,7 +1,10 @@
 """E2E test harness — runs inside the Docker container.
 
 Launches the vision node, feeds input (rosbag or usb_cam), optionally
-opens rqt, captures output messages, and prints a JSON report to stdout.
+starts rosboard, captures output messages, and prints a JSON report to stdout.
+
+Everything runs in a single container — camera, viz, rosboard, and the vision
+node are all started as local processes.
 """
 
 from __future__ import annotations
@@ -122,30 +125,40 @@ def _count_messages(topic: str, duration: float, first_msg_timeout: float = 300.
 
 
 def _start_input_source(args) -> subprocess.Popen | None:
-    """Start the input source (rosbag only). Returns the process.
-
-    usb_cam runs as a compose service on the shared network — the harness
-    doesn't need to start it. Only rosbag playback runs inside the node
-    container.
-    """
+    """Start the input source (rosbag or usb_cam). Returns the process."""
     if args.input_source == "rosbag":
         return _popen_show(
             ["ros2", "bag", "play", args.bag, "--loop"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
     elif args.input_source == "usb_cam":
-        _log("usb_cam runs as a compose service — not starting locally")
-        return None
+        video_device = getattr(args, "video_device", "/dev/video0")
+        _log(f"Starting usb_cam node (device: {video_device})")
+        proc = _popen_show(
+            ["ros2", "run", "usb_cam", "usb_cam_node_exe", "--ros-args",
+             "-p", f"video_device:={video_device}",
+             "-r", "/image_raw:=/camera/image_raw"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        threading.Thread(
+            target=_stream_pipe, args=(proc.stderr, "usb_cam"),
+            daemon=True,
+        ).start()
+        return proc
     return None
 
 
-def _start_rqt(output_topic: str) -> subprocess.Popen | None:
-    """Launch rqt_image_view on the output topic."""
-    return _popen_show(
-        ["ros2", "run", "rqt_image_view", "rqt_image_view",
-         "--ros-args", "-r", f"image:={output_topic}"],
+def _start_rosboard() -> subprocess.Popen | None:
+    """Launch rosboard web UI on port 8888."""
+    proc = _popen_show(
+        ["python3", "/opt/rosboard/run"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
+    threading.Thread(
+        target=_stream_pipe, args=(proc.stderr, "rosboard"),
+        daemon=True,
+    ).start()
+    return proc
 
 
 def main():
@@ -155,8 +168,9 @@ def main():
     parser.add_argument("--input-source", choices=["rosbag", "usb_cam"], default="rosbag",
                         help="Input source for the vision node")
     parser.add_argument("--bag", default=None, help="Path to rosbag directory (required if input-source=rosbag)")
+    parser.add_argument("--video-device", default="/dev/video0", help="Video device for usb_cam")
     parser.add_argument("--output-topic", required=True, help="Topic to monitor for output")
-    parser.add_argument("--rqt", action="store_true", help="Open rqt_image_view on the output topic")
+    parser.add_argument("--rosboard", action="store_true", help="Start rosboard web UI on port 8888")
     parser.add_argument("--duration", type=float, default=30.0, help="Test duration in seconds")
     args = parser.parse_args()
 
@@ -171,6 +185,10 @@ def main():
     _log(f"Input:   {args.input_source}")
     _log(f"Topic:   {args.output_topic}")
     _log(f"Duration: {args.duration}s")
+    if args.input_source == "usb_cam":
+        _log(f"Video:   {args.video_device}")
+    if args.rosboard:
+        _log(f"rosboard: enabled (port 8888)")
     _log("")
 
     # Show environment
@@ -200,7 +218,7 @@ def main():
         "node_startup_time_s": None,
         "input_source": args.input_source,
         "input_active": False,
-        "rqt_launched": args.rqt,
+        "rosboard_launched": args.rosboard,
         "messages_received": 0,
         "first_message_received": False,
         "output_topic": args.output_topic,
@@ -211,7 +229,7 @@ def main():
     node_proc = None
     input_proc = None
     viz_proc = None
-    rqt_proc = None
+    rosboard_proc = None
 
     try:
         # 1. Launch the vision node — stderr is streamed live so we see ROS logs
@@ -259,7 +277,7 @@ def main():
             _emit(report)
             return
 
-        # 3. Start input source
+        # 3. Start input source (rosbag or usb_cam — both run locally)
         _log("--- Starting input source ---")
         input_proc = _start_input_source(args)
         time.sleep(2.0)
@@ -280,14 +298,13 @@ def main():
         else:
             _log("viz_node.py not found, skipping visualization overlay")
 
-        # 5. Launch rqt if requested (point at viz topic if viz node is running)
-        if args.rqt:
-            _log("--- Launching rqt ---")
-            rqt_topic = "/detections_viz" if viz_proc else args.output_topic
-            rqt_proc = _start_rqt(rqt_topic)
+        # 5. Launch rosboard if requested (all topics visible in web UI)
+        if args.rosboard:
+            _log("--- Launching rosboard (http://localhost:8888) ---")
+            rosboard_proc = _start_rosboard()
             time.sleep(1.0)
 
-        # 6. Monitor the output topic (always, even with rqt)
+        # 6. Monitor the output topic
         _log("--- Monitoring output ---")
 
         # Check what topics are available
@@ -307,7 +324,7 @@ def main():
         _log(f"Unexpected error: {e}")
         report["errors"].append(f"Unexpected error: {e}")
     finally:
-        for proc in [rqt_proc, viz_proc, input_proc, node_proc]:
+        for proc in [rosboard_proc, viz_proc, input_proc, node_proc]:
             if proc and proc.poll() is None:
                 proc.terminate()
                 try:

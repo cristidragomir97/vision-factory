@@ -40,17 +40,15 @@ RUN apt-get update && apt-get install -y \
     ros-${ROS_DISTRO}-rosbag2-storage-default-plugins \
     ros-${ROS_DISTRO}-rosbag2-transport \
     ros-${ROS_DISTRO}-usb-cam \
-    ros-${ROS_DISTRO}-rqt \
-    ros-${ROS_DISTRO}-rqt-image-view \
-    ros-${ROS_DISTRO}-rqt-topic \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# ---- Python venv (isolates pip from deb packages) --------------------------
-# No --system-site-packages: the venv owns all pip packages (including numpy).
-# ROS Python packages (rclpy, cv_bridge, etc.) are made visible via PYTHONPATH
-# set by `source /opt/ros/.../setup.bash` at runtime — no shadowing conflicts.
+# ---- Python venv (pip deps isolated, but system deb packages visible) ------
+# --system-site-packages: lets the venv see apt-installed packages (catkin_pkg,
+# etc.) that colcon needs at runtime.  The numpy<2 constraint (below) prevents
+# pip from upgrading past the ABI cv_bridge needs.
 ENV VIRTUAL_ENV=/opt/venv
-RUN python3 -m venv ${VIRTUAL_ENV}
+RUN python3 -m venv --system-site-packages ${VIRTUAL_ENV}
 ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 # Tell colcon to use the venv Python so generated shebangs point here
@@ -74,6 +72,11 @@ RUN pip install --no-cache-dir \
     transformers \
     timm \
     pillow \
-    scipy
+    scipy \
+    tornado \
+    simplejpeg
+
+# ---- rosboard (web-based topic viewer, replaces rqt) -----------------------
+RUN git clone --depth 1 https://github.com/dheera/rosboard.git /opt/rosboard
 
 WORKDIR /ros_ws
