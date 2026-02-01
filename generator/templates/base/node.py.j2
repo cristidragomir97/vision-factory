@@ -7,7 +7,7 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 {% if output_type == "detections" %}
-from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose, Pose2D
+from vision_msgs.msg import Detection2DArray, Detection2D, ObjectHypothesisWithPose
 {% elif output_type == "depth_map" %}
 import numpy as np
 {% endif %}
@@ -128,7 +128,8 @@ class VisionNode(Node):
 
             # Bounding box center + size
             x1, y1, x2, y2 = boxes[i]
-            det.bbox.center = Pose2D(x=(x1 + x2) / 2, y=(y1 + y2) / 2, theta=0.0)
+            det.bbox.center.position.x = (x1 + x2) / 2
+            det.bbox.center.position.y = (y1 + y2) / 2
             det.bbox.size_x = float(x2 - x1)
             det.bbox.size_y = float(y2 - y1)
 

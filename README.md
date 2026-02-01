@@ -1,37 +1,35 @@
 # vision-factory
 
-A code generator that produces self-contained ROS2 vision packages.
+Pick a model, pick a backend, get a ROS2 package — ready to `colcon build` and deploy. No dependency soup, no 30 GB images, no "works on my laptop."
 
-## Why a Generator?
-
-A single universal vision node that supports every model and backend would accumulate the union of all dependencies — PyTorch, TensorRT, ONNX Runtime, OpenVINO, Ultralytics, Transformers, and more. That image would be enormous, most of it unused for any given deployment, and these libraries frequently conflict with each other.
-
-Vision-factory generates standalone packages instead. Each output contains only the code and dependencies it actually needs. A YOLO + CUDA package pulls in `ultralytics` and `torch+cu124`. A Depth Anything + ONNX package pulls in `onnxruntime` and `transformers`. Neither drags in the other's stack.
-
-The generated packages are small, self-documenting, and easy to audit — you can read every line of code that will run on your robot.
+Vision-factory is a code generator that produces **self-contained ROS2 vision packages**. Instead of one monolithic node that drags in PyTorch, TensorRT, ONNX Runtime, OpenVINO, Ultralytics, and Transformers all at once, each generated package ships only what it needs. YOLO on TensorRT? You get Ultralytics + TensorRT. Depth Anything on ONNX? You get `onnxruntime` + `transformers`. Clean, auditable, conflict-free.
 
 ## Supported Models
 
-| Model | Output | Variants |
-|-------|--------|----------|
-| YOLO | Object detection (xyxy) | v8n, v8s, v8m, v8l, v8x, v11n, v11s, v11m, v11l |
-| Depth Anything | Depth map | vits, vitb, vitl (v1 & v2) |
-| Grounding DINO | Detection + text prompts | tiny, base |
-| Segment Anything | Segmentation masks | hiera_t/s/b+/l, large, huge |
-| Florence | Multi-task VLM | base, base-ft, large, large-ft |
-| RTMPose | Keypoint detection | body-s/m/l, hand, face, wholebody-s/m/l |
-| ZoeDepth | Monocular depth | nyu, kitti, nyu-kitti |
-| ByteTrack | Multi-object tracking | - |
+| Model | What it does | Variants |
+|-------|--------------|----------|
+| **YOLO** | Object detection | v8n/s/m/l/x, v11n/s/m/l |
+| **Grounding DINO** | Open-vocabulary detection (text prompts) | tiny, base |
+| **Depth Anything** | Monocular depth estimation | vits, vitb, vitl (v1 & v2) |
+| **ZoeDepth** | Metric monocular depth | nyu, kitti, nyu-kitti |
+| **Segment Anything** | Promptable segmentation | hiera_t/s/b+/l, large, huge |
+| **Florence** | Multi-task vision-language | base, base-ft, large, large-ft |
+| **RTMPose** | Keypoint / pose estimation | body-s/m/l, hand, face, wholebody-s/m/l |
+| **ByteTrack** | Multi-object tracking | — |
 
-## Hardware Platforms
+## Runners & Hardware
 
-| Backend | Device | Notes |
-|---------|--------|-------|
-| `cuda` | NVIDIA GPU | PyTorch + `torch.compile`. Broadest model support. |
-| `tensorrt` | NVIDIA GPU | Optimized TensorRT engines. Currently supports YOLO. |
-| `rocm` | AMD GPU | Same PyTorch code paths as CUDA, ROCm stack. |
-| `openvino` | Intel CPU/iGPU/NPU | Intel-optimized inference. Good for NUCs and edge PCs. |
-| `onnx` | Any (CPU, CUDA, ROCm, OpenVINO, NPU) | Portable ONNX Runtime with selectable execution providers. |
+Every generated package includes a **runner** — a thin layer that wires up device setup, model loading, and the `preprocess -> forward -> postprocess` loop. You choose the runner at generation time with `--backend`, and the generated code is specialized for that backend. No runtime dispatch, no unused code paths.
+
+| Backend | Runner | Device | What you get |
+|---------|--------|--------|--------------|
+| `cuda` | `CudaRunner` | NVIDIA GPU | PyTorch + `torch.compile` for fused ops after warmup. Broadest model support. |
+| `tensorrt` | `TensorRtRunner` | NVIDIA GPU | Exports and caches TensorRT engines (FP16/INT8). Fastest inference on NVIDIA hardware. |
+| `rocm` | `RocmRunner` | AMD GPU | Same PyTorch code paths as CUDA, built against the ROCm stack. |
+| `openvino` | `OpenVinoRunner` | Intel CPU / iGPU / NPU | Intel-optimized inference via OpenVINO Runtime. Great for NUCs and edge PCs. |
+| `onnx` | `OnnxRunner` | Any | Portable ONNX Runtime with selectable execution providers (CPU, CUDA, ROCm, OpenVINO, NPU). |
+
+The CUDA and ROCm runners optionally apply `torch.compile` for graph-level fusion — the first frame compiles, then every subsequent frame runs the optimized graph. The TensorRT runner goes further: it exports a TensorRT engine on first launch, caches it to disk, and reloads it instantly on subsequent runs. The ONNX runner follows the same caching pattern for its exported `.onnx` models.
 
 See [docs/hardware.md](docs/hardware.md) for per-platform details, example commands, and NPU guidance.
 
