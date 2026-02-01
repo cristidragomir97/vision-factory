@@ -14,6 +14,7 @@ model:
     - rtmpose_wholebody_m
     - rtmpose_wholebody_l
   default_variant: rtmpose_m
+  backends: [cuda, rocm, openvino]
 
 source:
   type: mmpose

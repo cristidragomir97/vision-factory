@@ -15,6 +15,7 @@ model:
     - yolo_v11m
     - yolo_v11l
   default_variant: yolo_v8s
+  backends: [cuda, rocm, openvino, tensorrt, onnx]
 
 source:
   type: ultralytics  # ultralytics, huggingface, local

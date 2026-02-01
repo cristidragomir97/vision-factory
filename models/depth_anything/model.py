@@ -2,11 +2,12 @@
 
 import cv2
 import numpy as np
-import torch
 from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
+from .base_model import HuggingFaceModel
 
-class {{ model_class }}:
+
+class DepthAnythingModel(HuggingFaceModel):
     """Monocular depth estimation using Depth Anything v2.
 
     Produces relative depth maps (higher value = further away).
@@ -28,31 +29,11 @@ class {{ model_class }}:
         "inferno": cv2.COLORMAP_INFERNO,
     }
 
-    def __init__(self, node):
-        self.node = node
+    def __init__(self, node, variant):
+        super().__init__(node, variant, AutoImageProcessor, AutoModelForDepthEstimation)
         self.publish_colored = node.get_parameter('publish_colored').value
         self.colormap_name = node.get_parameter('colormap').value
         self.colormap = self.COLORMAPS.get(self.colormap_name, cv2.COLORMAP_TURBO)
-
-    def load(self, device):
-        repo = self.VARIANT_MAP.get("{{ variant }}")
-        if repo is None:
-            raise ValueError(f"Unknown variant: {{ variant }}")
-
-        self.processor = AutoImageProcessor.from_pretrained(repo)
-        self.model = AutoModelForDepthEstimation.from_pretrained(repo).to(device)
-        self.model.eval()
-        self.device = device
-
-    def preprocess(self, image):
-        """Convert BGR -> RGB and run HF processor."""
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        inputs = self.processor(images=rgb, return_tensors="pt")
-        return {k: v.to(self.device) for k, v in inputs.items()}
-
-    def forward(self, inputs):
-        """Run model forward pass."""
-        return self.model(**inputs)
 
     def postprocess(self, outputs, original_size=None):
         """Normalize depth and optionally colorize."""
@@ -75,3 +56,6 @@ class {{ model_class }}:
             result['depth_colored'] = cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
 
         return result
+
+
+Model = DepthAnythingModel

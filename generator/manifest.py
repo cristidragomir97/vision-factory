@@ -16,6 +16,7 @@ class ModelInfo(BaseModel):
     family: str
     variants: list[str]
     default_variant: str
+    backends: list[str] = ["cuda", "rocm", "openvino"]
 
 
 class SourceInfo(BaseModel):
@@ -130,13 +131,14 @@ def load_manifest(path: Path) -> ModelManifest:
     return ModelManifest.model_validate(data)
 
 
-def load_all_manifests(manifests_dir: Path) -> dict[str, ModelManifest]:
+def load_all_manifests(models_dir: Path) -> dict[str, ModelManifest]:
     """Load all manifests from a directory.
 
+    Expects models_dir/<model>/manifest.yaml layout.
     Returns a dict keyed by model name.
     """
     manifests: dict[str, ModelManifest] = {}
-    for path in sorted(manifests_dir.glob("*.yaml")):
+    for path in sorted(models_dir.glob("*/manifest.yaml")):
         manifest = load_manifest(path)
         manifests[manifest.model.name] = manifest
     return manifests

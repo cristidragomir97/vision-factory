@@ -1,10 +1,11 @@
 """YOLO model via Ultralytics API."""
 
 import time
+
 from ultralytics import YOLO
 
 
-class {{ model_class }}:
+class YoloModel:
     """YOLO object detection model.
 
     Ultralytics handles preprocessing internally — we just call predict()
@@ -24,9 +25,10 @@ class {{ model_class }}:
         "yolo_v11l": "yolo11l.pt",
     }
 
-    def __init__(self, node):
+    def __init__(self, node, variant):
         self.node = node
         self.logger = node.get_logger()
+        self.variant = variant
         self.confidence = node.get_parameter('confidence_threshold').value
         self.iou = node.get_parameter('iou_threshold').value
         classes_param = node.get_parameter('classes').value
@@ -34,7 +36,7 @@ class {{ model_class }}:
         self.logger.info(f'YoloModel: conf={self.confidence}, iou={self.iou}, classes={self.classes}')
 
     def load(self, device):
-        weights = self.WEIGHTS_MAP.get("{{ variant }}", "{{ variant }}.pt")
+        weights = self.WEIGHTS_MAP.get(self.variant, f"{self.variant}.pt")
         self.logger.info(f'YoloModel: loading weights "{weights}"...')
         t0 = time.monotonic()
         self.model = YOLO(weights)
@@ -68,3 +70,6 @@ class {{ model_class }}:
             'class_ids': class_ids,
             'class_names': class_names,
         }
+
+
+Model = YoloModel

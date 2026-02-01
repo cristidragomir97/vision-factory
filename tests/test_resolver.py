@@ -49,10 +49,10 @@ class TestResolveDependencies:
         with pytest.raises(ValueError, match="Unknown backend"):
             resolve_dependencies("yolo", "tpu")
 
-    def test_sam_openvino_warning(self):
-        deps = resolve_dependencies("segment_anything", "openvino", "segmentation")
-        assert len(deps.warnings) > 0
-        assert "SAM2" in deps.warnings[0]
+    def test_tensorrt_backend(self):
+        deps = resolve_dependencies("yolo", "tensorrt", "detections")
+        assert deps.torch_index_url == "https://download.pytorch.org/whl/cu124"
+        assert any("tensorrt" in d for d in deps.pip_deps)
 
     def test_unknown_model_no_extra_deps(self):
         deps = resolve_dependencies("unknown_model", "cuda")
@@ -78,6 +78,23 @@ class TestValidateSelection:
     def test_multiple_errors(self):
         errors = validate_selection("yolo", "tpu", "yolo_v99", ["yolo_v8s"])
         assert len(errors) == 2
+
+    def test_unsupported_backend(self):
+        errors = validate_selection(
+            "depth_anything", "tensorrt", "depth_anything_v2_vitb",
+            ["depth_anything_v2_vitb"],
+            supported_backends=["cuda", "rocm", "openvino"],
+        )
+        assert len(errors) == 1
+        assert "not supported" in errors[0]
+
+    def test_supported_backend_passes(self):
+        errors = validate_selection(
+            "yolo", "tensorrt", "yolo_v8s",
+            ["yolo_v8s"],
+            supported_backends=["cuda", "rocm", "openvino", "tensorrt"],
+        )
+        assert errors == []
 
 
 class TestBuildContext:

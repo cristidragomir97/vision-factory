@@ -1,168 +1,155 @@
-# Plan: Reduce Model Template Boilerplate via Base Classes
+# Plan: Real Python Model Files (No Jinja2)
 
 ## Goal
-Extract shared infrastructure (load, preprocess, forward) into base classes so per-model templates only define `postprocess()` — the truly unique part. Add `codegen` manifest fields to drive the shared parts declaratively.
+Model files become plain `.py` files — lintable, testable, no Jinja2. The generator just copies them. Only ROS wiring (node, runner, package metadata) stays as templates.
 
-## What Changes
+## Research: How Other Projects Handle This
 
-### 1. New base class templates
+We looked at ESPHome, MMDetection, HuggingFace Transformers, Home Assistant, Cookiecutter, and TinyGSM. The pattern that wins across all of them: **real Python files for model logic + declarative metadata for discovery/wiring**. Not code generation of model logic from YAML/templates.
 
-Create two base class templates that handle the repetitive parts:
+- **MMDetection**: `@MODELS.register_module()` decorator on real Python classes, referenced by name in config
+- **HuggingFace**: `AutoModel.register()` on real Python classes, config is JSON metadata
+- **ESPHome**: YAML config → generated code, but component implementations are real code
+- **TinyGSM**: Deep inheritance was fragile and hard to extend — cautionary tale
 
-**`generator/templates/base/base_model_hf.py.j2`** — HuggingFace base class:
+## Key Design Decisions
+
+1. **Copy base classes into each package** (not a shared pip library) — keeps packages self-contained
+2. **Standardize model export**: every model file ends with `Model = ConcreteClassName` — runners always do `from .model import Model`
+3. **Variant becomes a ROS parameter** (default set at generation time) — model reads it at init via `__init__(self, node, variant)`
+4. **Only HuggingFace gets a base class** — YOLO stays standalone (it's already simple)
+5. **Backward-compatible**: engine checks for `.py` first, falls back to `.py.j2`
+
+## New/Modified Files
+
+### NEW: `model_templates/base_model.py` (real Python)
 ```python
-"""Base class for HuggingFace Transformers models."""
-import cv2
-import torch
+class HuggingFaceModel:
+    VARIANT_MAP = {}  # subclass overrides
 
-class HuggingFaceModelBase:
-    VARIANT_MAP = {}  # Override in subclass
-
-    def __init__(self, node):
+    def __init__(self, node, variant, processor_cls, model_cls):
         self.node = node
         self.logger = node.get_logger()
-        # Read all ROS parameters into self.<name>
-        {% for param in parameters %}
-        self.{{ param.name }} = node.get_parameter('{{ param.name }}').value
-        {% endfor %}
+        self.variant = variant
+        self._processor_cls = processor_cls
+        self._model_cls = model_cls
 
     def load(self, device):
-        from transformers import {{ codegen.loading.processor_class }}, {{ codegen.loading.model_class }}
-        repo = self.VARIANT_MAP.get("{{ variant }}")
-        self.processor = {{ codegen.loading.processor_class }}.from_pretrained(repo)
-        self.model = {{ codegen.loading.model_class }}.from_pretrained(repo).to(device)
+        repo = self.VARIANT_MAP[self.variant]
+        self.processor = self._processor_cls.from_pretrained(repo)
+        self.model = self._model_cls.from_pretrained(repo).to(device)
         self.model.eval()
         self.device = device
 
     def preprocess(self, image, **kwargs):
+        import cv2
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        # text input handled if has_text_input
         inputs = self.processor(images=rgb, **kwargs, return_tensors="pt")
         return {k: v.to(self.device) for k, v in inputs.items()}
 
     def forward(self, inputs):
         return self.model(**inputs)
-```
-
-**`generator/templates/base/base_model_ultralytics.py.j2`** — Ultralytics base class:
-```python
-"""Base class for Ultralytics models."""
-from ultralytics import YOLO
-
-class UltralyticsModelBase:
-    VARIANT_MAP = {}
-
-    def __init__(self, node):
-        self.node = node
-        self.logger = node.get_logger()
-        {% for param in parameters %}
-        self.{{ param.name }} = node.get_parameter('{{ param.name }}').value
-        {% endfor %}
-
-    def load(self, device):
-        weights = self.VARIANT_MAP.get("{{ variant }}", "{{ variant }}.pt")
-        self.model = YOLO(weights)
-        self.model.to(device)
-
-    def predict(self, image):
-        return self.model(image, verbose=False, **self._predict_kwargs())
-```
-
-### 2. Add `codegen` section to manifests
-
-Minimal — just enough to drive the base class:
-
-```yaml
-# In each manifest YAML:
-codegen:
-  variant_map:
-    variant_name: "weight_or_repo_id"
-  loading:
-    pattern: huggingface        # or: ultralytics
-    processor_class: AutoProcessor        # HF only
-    model_class: AutoModelForZeroShotObjectDetection  # HF only
-```
-
-### 3. Simplify per-model templates
-
-Each model template shrinks to just the unique part — `postprocess()` and any model-specific extras:
-
-**yolo.py.j2** (before: 71 lines, after: ~20 lines):
-```python
-from .base_model import UltralyticsModelBase
-
-class {{ model_class }}(UltralyticsModelBase):
-    VARIANT_MAP = { {{ codegen variant_map entries }} }
-
-    def _predict_kwargs(self):
-        return dict(conf=self.confidence_threshold, iou=self.iou_threshold,
-                    classes=self.classes if self.classes else None)
-
-    def postprocess(self, results):
-        result = results[0]
-        # ... extract boxes/scores/class_ids/class_names ...
-```
-
-**grounding_dino.py.j2** (before: 77 lines, after: ~30 lines):
-```python
-from .base_model import HuggingFaceModelBase
-
-class {{ model_class }}(HuggingFaceModelBase):
-    VARIANT_MAP = { {{ codegen variant_map entries }} }
-
-    def preprocess(self, image, text=None):
-        prompt = text if text is not None else self.default_prompt
-        inputs = super().preprocess(image, text=prompt)
-        self._last_input_ids = inputs.get("input_ids")  # needed for postprocess
-        return inputs
 
     def postprocess(self, outputs, original_size=None):
-        # ... grounding DINO specific post-processing ...
+        raise NotImplementedError
 ```
 
-**depth_anything.py.j2** (before: 78 lines, after: ~25 lines):
+### NEW: `model_templates/models/yolo.py` (replaces `yolo.py.j2`)
+- Standalone class `YoloModel` — no base class needed
+- `__init__(self, node, variant)` — reads params, stores variant
+- `load(self, device)` — `WEIGHTS_MAP[self.variant]` → `YOLO(weights).to(device)`
+- `predict()`, `postprocess()` — same logic as current template
+- Bottom: `Model = YoloModel`
+
+### NEW: `model_templates/models/grounding_dino.py` (replaces `.py.j2`)
+- `class GroundingDinoModel(HuggingFaceModel)` with `VARIANT_MAP`
+- `__init__` passes `AutoProcessor`, `AutoModelForZeroShotObjectDetection` to super
+- Overrides `preprocess` (text handling) and `postprocess`
+- Bottom: `Model = GroundingDinoModel`
+
+### NEW: `model_templates/models/depth_anything.py` (replaces `.py.j2`)
+- `class DepthAnythingModel(HuggingFaceModel)` with `VARIANT_MAP`
+- Overrides `postprocess` (depth normalization + colormap)
+- Bottom: `Model = DepthAnythingModel`
+
+### MODIFY: `generator/engine.py` — `_render_all()`
 ```python
-from .base_model import HuggingFaceModelBase
+# Copy base_model.py into package (always, harmless if unused)
+base_model_src = self.model_templates_dir / "base_model.py"
+if base_model_src.exists():
+    files[f"{pkg}/base_model.py"] = base_model_src.read_text()
 
-class {{ model_class }}(HuggingFaceModelBase):
-    VARIANT_MAP = { {{ codegen variant_map entries }} }
-
-    def postprocess(self, outputs, original_size=None):
-        # ... depth normalization + colormap ...
+# Model: prefer .py (real Python), fall back to .py.j2, then placeholder
+model_py = self.model_templates_dir / "models" / f"{model}.py"
+if model_py.exists():
+    files[f"{pkg}/model.py"] = model_py.read_text()
+else:
+    # legacy .j2 template path
+    ...
 ```
 
-### 4. Files to modify
+### MODIFY: `generator/templates/runners/cuda.py.j2` (+ rocm, openvino)
+```python
+# Before:
+from .model import {{ model_class }}
+self.model = {{ model_class }}(node)
 
-| File | Change |
-|------|--------|
-| `generator/manifest.py` | Add `CodegenConfig` Pydantic model with `variant_map` and `loading` fields. Add optional `codegen` field to `ModelManifest` |
-| `generator/context.py` | Pass `codegen` dict into template context |
-| `generator/engine.py` | Render `base_model.py` from the appropriate base class template, add it to the generated package files |
-| `generator/templates/base/base_model_hf.py.j2` | **NEW** — HuggingFace base class template |
-| `generator/templates/base/base_model_ultralytics.py.j2` | **NEW** — Ultralytics base class template |
-| `model_templates/models/yolo.py.j2` | Simplify — inherit from UltralyticsModelBase, only define postprocess + predict kwargs |
-| `model_templates/models/grounding_dino.py.j2` | Simplify — inherit from HuggingFaceModelBase, only define postprocess + preprocess override |
-| `model_templates/models/depth_anything.py.j2` | Simplify — inherit from HuggingFaceModelBase, only define postprocess |
-| `manifests/yolo.yaml` | Add `codegen` section with variant_map + loading |
-| `manifests/grounding_dino.yaml` | Add `codegen` section with variant_map + loading |
-| `manifests/depth_anything.yaml` | Add `codegen` section with variant_map + loading |
-| `generator/templates/runners/cuda.py.j2` | No change needed — runner still calls model.predict/preprocess/forward/postprocess |
-
-### 5. Generated package structure (after)
-
+# After:
+from .model import Model
+variant = node.get_parameter('variant').value
+self.model = Model(node, variant)
 ```
-e2e_yolo/
-├── e2e_yolo/
-│   ├── __init__.py
-│   ├── node.py          # unchanged
-│   ├── base_model.py    # NEW — generated from base class template
-│   ├── model.py         # simplified — just postprocess + overrides
-│   └── runner.py        # unchanged
-├── ...
-```
+Keep `{{ model_family }}` and `{{ has_text_input }}` for `infer()` branching — those stay as Jinja2.
+
+### MODIFY: `generator/templates/base/node.py.j2`
+- Remove: `from .model import {{ model_class }}` and `self.model = {{ model_class }}(self)`
+- Add: `self.declare_parameter('variant', '{{ variant }}')` to parameter declarations
+- The runner already creates the model — node doesn't need to
+
+### DELETE (after migration):
+- `model_templates/models/yolo.py.j2`
+- `model_templates/models/grounding_dino.py.j2`
+- `model_templates/models/depth_anything.py.j2`
+
+## Adding a New Model (After This Change)
+
+To add a new HuggingFace model, a contributor creates:
+
+1. **`manifests/new_model.yaml`** — declares variants, ROS params, publishers, output type
+2. **`model_templates/models/new_model.py`** — plain Python file:
+   ```python
+   from transformers import SomeProcessor, SomeAutoModel
+   from .base_model import HuggingFaceModel
+
+   class NewModel(HuggingFaceModel):
+       VARIANT_MAP = {"variant_a": "org/model-a", "variant_b": "org/model-b"}
+
+       def __init__(self, node, variant):
+           super().__init__(node, variant, SomeProcessor, SomeAutoModel)
+
+       def postprocess(self, outputs, original_size=None):
+           # model-specific extraction logic
+           return {...}
+
+   Model = NewModel
+   ```
+
+No Jinja2 knowledge required. The file is testable in isolation.
+
+## Implementation Order
+
+1. Create `base_model.py` (the HuggingFace base class)
+2. Convert `depth_anything.py.j2` → `.py` (simplest HF model)
+3. Convert `grounding_dino.py.j2` → `.py` (HF with text input)
+4. Convert `yolo.py.j2` → `.py` (standalone, no base class)
+5. Update `engine.py` to prefer `.py` over `.py.j2` and copy `base_model.py`
+6. Update runner templates (`from .model import Model`, pass variant)
+7. Update `node.py.j2` (remove model instantiation, add variant param)
+8. Delete the old `.py.j2` files
 
 ## Verification
 
-1. Generate `e2e_yolo` package, verify `model.py` imports from `base_model` and inference works
+1. Generate `e2e_yolo` package → verify `model.py` is valid Python (no `{{ }}`)
 2. Run `python3 e2e/run.py --verbose --model yolo --backend cuda --usb-cam --rqt --duration 30`
-3. Generate grounding_dino and depth_anything packages, verify valid Python output
+3. Generate grounding_dino + depth_anything packages → verify valid Python
+4. `python -c "import ast; ast.parse(open('model.py').read())"` on each generated model

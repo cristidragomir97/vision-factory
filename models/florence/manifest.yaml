@@ -10,6 +10,7 @@ model:
     - florence_2_base_ft  # fine-tuned variants
     - florence_2_large_ft
   default_variant: florence_2_large
+  backends: [cuda, rocm, openvino]
 
 source:
   type: huggingface

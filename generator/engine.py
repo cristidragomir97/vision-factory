@@ -50,17 +50,16 @@ class Generator:
 
     def __init__(
         self,
-        manifests_dir: Path,
+        models_dir: Path,
         core_templates_dir: Path,
-        model_templates_dir: Path | None = None,
     ):
-        self.manifests = load_all_manifests(manifests_dir)
-        self.model_templates_dir = model_templates_dir
+        self.models_dir = models_dir
+        self.manifests = load_all_manifests(models_dir)
 
         # Set up Jinja2 with multiple template directories
         loaders = [jinja2.FileSystemLoader(str(core_templates_dir))]
-        if model_templates_dir and model_templates_dir.exists():
-            loaders.append(jinja2.FileSystemLoader(str(model_templates_dir)))
+        if models_dir.exists():
+            loaders.append(jinja2.FileSystemLoader(str(models_dir)))
 
         self.env = jinja2.Environment(
             loader=jinja2.ChoiceLoader(loaders),
@@ -106,7 +105,8 @@ class Generator:
 
         # Validate
         errors = validate_selection(
-            model_name, backend, variant, manifest.model.variants
+            model_name, backend, variant, manifest.model.variants,
+            supported_backends=manifest.model.backends,
         )
         if errors:
             raise GenerationError(errors)
@@ -156,13 +156,31 @@ class Generator:
         # Runner template
         files[f"{pkg}/runner.py"] = self._render(f"runners/{backend}.py.j2", ctx)
 
-        # Model template (from model_templates_dir or fallback)
-        model_template = f"models/{model}.py.j2"
-        try:
-            files[f"{pkg}/model.py"] = self._render(model_template, ctx)
-        except jinja2.TemplateNotFound:
-            # No model template available — generate a placeholder
-            files[f"{pkg}/model.py"] = self._render_model_placeholder(ctx)
+        # Copy base_model.py into package (always, harmless if unused)
+        base_model_src = self.models_dir / "base_model.py"
+        if base_model_src.exists():
+            files[f"{pkg}/base_model.py"] = base_model_src.read_text()
+
+        # Copy model_base.py if it exists (shared base for backend-specific models)
+        model_base_py = self.models_dir / model / "model_base.py"
+        if model_base_py.exists():
+            files[f"{pkg}/model_base.py"] = model_base_py.read_text()
+
+        # Model: prefer model_{backend}.py, fall back to model.py, then .j2, then placeholder
+        model_backend_py = self.models_dir / model / f"model_{backend}.py"
+        model_py = self.models_dir / model / "model.py"
+
+        if model_backend_py.exists():
+            files[f"{pkg}/model.py"] = model_backend_py.read_text()
+        elif model_py.exists():
+            files[f"{pkg}/model.py"] = model_py.read_text()
+        else:
+            # Legacy .j2 template path
+            model_template = f"{model}/model.py.j2"
+            try:
+                files[f"{pkg}/model.py"] = self._render(model_template, ctx)
+            except jinja2.TemplateNotFound:
+                files[f"{pkg}/model.py"] = self._render_model_placeholder(ctx)
 
         return files
 

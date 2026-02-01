@@ -1,0 +1,79 @@
+# Fat base image for vision-factory e2e tests.
+# Pre-installs ROS2 + all ML deps so per-run containers skip pip downloads.
+#
+# Build:
+#   docker build -f e2e/Dockerfile.base \
+#       -t vision-factory-e2e-base:jazzy e2e/
+#
+# Base image uses CUDA 13.0 for driver/runtime compat.
+# PyTorch wheels use cu124 (latest published index).
+# All pip deps live in /opt/venv to avoid conflicts with deb packages.
+
+ARG CUDA_VERSION=13.0.0
+ARG UBUNTU_VERSION=ubuntu24.04
+ARG ROS_DISTRO=jazzy
+
+FROM nvidia/cuda:${CUDA_VERSION}-cudnn-devel-${UBUNTU_VERSION}
+
+ARG ROS_DISTRO
+ENV DEBIAN_FRONTEND=noninteractive
+ENV ROS_DISTRO=${ROS_DISTRO}
+
+# ---- ROS2 + system packages ------------------------------------------------
+RUN apt-get update && apt-get install -y \
+    software-properties-common \
+    curl \
+    python3-venv \
+    && add-apt-repository universe \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+       -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+       http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
+       > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update && apt-get install -y \
+    ros-${ROS_DISTRO}-ros-base \
+    python3-colcon-common-extensions \
+    python3-pip \
+    python3-opencv \
+    ros-${ROS_DISTRO}-vision-msgs \
+    ros-${ROS_DISTRO}-cv-bridge \
+    ros-${ROS_DISTRO}-rosbag2-storage-default-plugins \
+    ros-${ROS_DISTRO}-rosbag2-transport \
+    ros-${ROS_DISTRO}-usb-cam \
+    ros-${ROS_DISTRO}-rqt \
+    ros-${ROS_DISTRO}-rqt-image-view \
+    ros-${ROS_DISTRO}-rqt-topic \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---- Python venv (isolates pip from deb packages) --------------------------
+# No --system-site-packages: the venv owns all pip packages (including numpy).
+# ROS Python packages (rclpy, cv_bridge, etc.) are made visible via PYTHONPATH
+# set by `source /opt/ros/.../setup.bash` at runtime — no shadowing conflicts.
+ENV VIRTUAL_ENV=/opt/venv
+RUN python3 -m venv ${VIRTUAL_ENV}
+ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
+
+# Tell colcon to use the venv Python so generated shebangs point here
+# instead of /usr/bin/python3 (which can't see venv packages).
+ENV COLCON_PYTHON_EXECUTABLE="${VIRTUAL_ENV}/bin/python3"
+
+# ---- Python / ML dependencies (installed into venv) ------------------------
+# Constrain numpy<2: cv_bridge's C extension (apt package) is compiled against
+# NumPy 1.x ABI. The venv numpy is found first in sys.path, so it must be 1.x
+# compatible. This constraint applies to all pip installs in this image.
+RUN echo "numpy<2" > /opt/venv/constraints.txt
+ENV PIP_CONSTRAINT=/opt/venv/constraints.txt
+
+RUN pip install --no-cache-dir \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+RUN pip install --no-cache-dir \
+    onnxruntime-gpu \
+    tensorrt \
+    ultralytics \
+    transformers \
+    timm \
+    pillow \
+    scipy
+
+WORKDIR /ros_ws

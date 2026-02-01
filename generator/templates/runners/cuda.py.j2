@@ -2,7 +2,7 @@
 
 import time
 import torch
-from .model import {{ model_class }}
+from .model import Model
 
 
 class {{ runner_class }}:
@@ -21,13 +21,27 @@ class {{ runner_class }}:
 
         self.logger.info('{{ runner_class }}: creating model instance...')
         t0 = time.monotonic()
-        self.model = {{ model_class }}(node)
+        variant = node.get_parameter('variant').value
+        self.model = Model(node, variant)
         self.logger.info(f'{{ runner_class }}: model instance created in {time.monotonic() - t0:.2f}s')
 
         self.logger.info('{{ runner_class }}: loading weights to device...')
         t0 = time.monotonic()
         self.model.load(self.device)
         self.logger.info(f'{{ runner_class }}: weights loaded in {time.monotonic() - t0:.2f}s')
+
+{% if model_family != "ultralytics" %}
+        # torch.compile: fuses ops and eliminates Python overhead after warmup.
+        self._use_compile = node.declare_parameter('use_torch_compile', True).value
+        if self._use_compile:
+            self.logger.info('{{ runner_class }}: applying torch.compile to forward()...')
+            t0 = time.monotonic()
+            self.model.forward = torch.compile(self.model.forward)
+            self.logger.info(f'{{ runner_class }}: torch.compile applied in {time.monotonic() - t0:.2f}s '
+                             '(first inference will trigger compilation)')
+        else:
+            self.logger.info('{{ runner_class }}: torch.compile disabled via parameter')
+{% endif %}
 
         self.logger.info('{{ runner_class }}: ready.')
 

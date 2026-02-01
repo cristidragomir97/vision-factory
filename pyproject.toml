@@ -22,7 +22,7 @@ dev = [
 ]
 
 [project.scripts]
-vision-gen = "generator.cli:main"
+vision-factory = "generator.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["generator*"]

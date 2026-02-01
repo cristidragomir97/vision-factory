@@ -3,13 +3,14 @@
 Runs inference on CPU/iGPU using OpenVINO Runtime.
 """
 
-from .model import {{ model_class }}
+from .model import Model
 
 
 class {{ runner_class }}:
     def __init__(self, node):
         self.node = node
-        self.model = {{ model_class }}(node)
+        variant = node.get_parameter('variant').value
+        self.model = Model(node, variant)
         # OpenVINO will handle device placement
         self.model.load(device=None)
         node.get_logger().info('{{ runner_class }}: loaded (OpenVINO)')

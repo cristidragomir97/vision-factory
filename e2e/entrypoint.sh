@@ -6,24 +6,24 @@ echo "ROS_DISTRO: $ROS_DISTRO"
 echo "PACKAGE_NAME: $PACKAGE_NAME"
 echo "NODE_NAME: $NODE_NAME"
 
+# Activate the venv (pip deps live here, isolated from deb packages)
+echo "--- Activating venv ---"
+source /opt/venv/bin/activate
+echo "Python: $(which python3) ($(python3 --version))"
+
 # Source ROS
 echo "--- Sourcing ROS ---"
 source /opt/ros/${ROS_DISTRO}/setup.bash
 echo "ROS sourced: $(which ros2)"
 
-# Pip deps are pre-installed in the Docker image layer.
-# Re-run pip to catch any changes (already-satisfied packages are skipped quickly).
-if [ -f /ros_ws/src/${PACKAGE_NAME}/requirements.txt ]; then
-    echo "--- Checking pip requirements ---"
-    pip3 install --no-cache-dir -r /ros_ws/src/${PACKAGE_NAME}/requirements.txt --break-system-packages 2>&1 | tail -5
-    echo "pip check done."
-fi
-
 # Build the mounted package with colcon
+# COLCON_PYTHON_EXECUTABLE ensures entry point shebangs use the venv Python.
 echo "--- Building with colcon ---"
+export COLCON_PYTHON_EXECUTABLE=/opt/venv/bin/python3
 cd /ros_ws
 colcon build --packages-select ${PACKAGE_NAME}
 echo "colcon build done."
+echo "Entry point shebang: $(head -1 /ros_ws/install/${PACKAGE_NAME}/lib/${PACKAGE_NAME}/${PACKAGE_NAME}_node 2>/dev/null || echo 'not found')"
 
 # Source the workspace
 echo "--- Sourcing workspace ---"

@@ -1,0 +1,67 @@
+"""ONNX Runtime inference runner for {{ model_name }}.
+
+Exports and caches ONNX models for portable CPU/GPU inference.
+"""
+
+import os
+import time
+import numpy as np
+from .model import Model
+
+
+class {{ runner_class }}:
+    def __init__(self, node):
+        self.node = node
+        self.logger = node.get_logger()
+        self.logger.info('{{ runner_class }}: initializing...')
+
+        # ONNX-specific parameters
+        node.declare_parameter('onnx_cache_dir', '/tmp/onnx_models')
+        node.declare_parameter('execution_provider', 'CPUExecutionProvider')
+        self.onnx_cache_dir = node.get_parameter('onnx_cache_dir').value
+        self.execution_provider = node.get_parameter('execution_provider').value
+
+        variant = node.get_parameter('variant').value
+        self.model = Model(node, variant)
+
+{% if model_family == "ultralytics" %}
+        # ONNX caching: check for pre-exported model
+        onnx_name = f'{variant}.onnx'
+        onnx_path = os.path.join(self.onnx_cache_dir, onnx_name)
+
+        if os.path.isfile(onnx_path):
+            self.logger.info(f'{{ runner_class }}: found cached ONNX model at {onnx_path}')
+            self.model.load_onnx(onnx_path)
+        else:
+            self.logger.info(f'{{ runner_class }}: no cached ONNX model, exporting...')
+            self.model.load(device='cpu')
+            self.model.export_onnx(
+                cache_dir=self.onnx_cache_dir,
+                model_name=onnx_name,
+            )
+            self.model.load_onnx(onnx_path)
+{% else %}
+        # Non-Ultralytics models: standard loading
+        self.model.load(device=None)
+{% endif %}
+
+        self.logger.info('{{ runner_class }}: ready.')
+
+{% if model_family == "ultralytics" %}
+    def infer(self, image):
+        """Run inference using Ultralytics ONNX model."""
+        raw = self.model.predict(image)
+        return self.model.postprocess(raw)
+{% elif has_text_input %}
+    def infer(self, image, text=None):
+        """Run inference with image and text input."""
+        inputs = self.model.preprocess(image, text=text)
+        outputs = self.model.forward(inputs)
+        return self.model.postprocess(outputs, original_size=image.shape[:2])
+{% else %}
+    def infer(self, image):
+        """Run inference: preprocess -> forward -> postprocess."""
+        inputs = self.model.preprocess(image)
+        outputs = self.model.forward(inputs)
+        return self.model.postprocess(outputs, original_size=image.shape[:2])
+{% endif %}

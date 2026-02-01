@@ -12,6 +12,7 @@ model:
     - depth_anything_v1_vitb
     - depth_anything_v1_vitl
   default_variant: depth_anything_v2_vitb
+  backends: [cuda, rocm, openvino]
 
 source:
   type: huggingface

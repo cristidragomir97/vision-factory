@@ -110,3 +110,43 @@ class TestInvalidManifest:
         bad.write_text("source:\n  type: test\n  repo: test/test\n")
         with pytest.raises(Exception):
             load_manifest(bad)
+
+
+class TestBackendsField:
+    """Test backends field on manifests."""
+
+    def test_yolo_has_tensorrt(self, yolo_manifest):
+        assert "tensorrt" in yolo_manifest.model.backends
+        assert "cuda" in yolo_manifest.model.backends
+
+    def test_depth_anything_no_tensorrt(self, depth_manifest):
+        assert "tensorrt" not in depth_manifest.model.backends
+        assert "cuda" in depth_manifest.model.backends
+
+    def test_all_manifests_have_backends(self, all_manifests):
+        for name, manifest in all_manifests.items():
+            assert len(manifest.model.backends) > 0, f"{name}: no backends"
+
+    def test_default_backends_when_omitted(self, tmp_path):
+        """Backends should default to [cuda, rocm, openvino] when not specified."""
+        minimal = tmp_path / "manifest.yaml"
+        minimal.write_text(
+            "model:\n"
+            "  name: test\n"
+            "  family: test\n"
+            "  variants: [v1]\n"
+            "  default_variant: v1\n"
+            "source:\n"
+            "  type: test\n"
+            "  repo: test/test\n"
+            "input:\n"
+            "  type: image\n"
+            "output:\n"
+            "  type: detections\n"
+            "ros:\n"
+            "  publishers:\n"
+            "    - topic: test\n"
+            "      msg_type: Test\n"
+        )
+        manifest = load_manifest(minimal)
+        assert manifest.model.backends == ["cuda", "rocm", "openvino"]

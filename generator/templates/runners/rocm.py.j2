@@ -3,18 +3,40 @@
 ROCm uses the same PyTorch API as CUDA — the difference is the torch build.
 """
 
+import time
 import torch
-from .model import {{ model_class }}
+from .model import Model
 
 
 class {{ runner_class }}:
     def __init__(self, node):
         self.node = node
+        self.logger = node.get_logger()
         # ROCm devices appear as 'cuda' in PyTorch
         self.device = torch.device('cuda:{{ device_id }}')
-        self.model = {{ model_class }}(node)
+
+        self.logger.info(f'{{ runner_class }}: using device {self.device} (ROCm)')
+
+        t0 = time.monotonic()
+        variant = node.get_parameter('variant').value
+        self.model = Model(node, variant)
         self.model.load(self.device)
-        node.get_logger().info(f'{{ runner_class }}: loaded on {self.device} (ROCm)')
+        self.logger.info(f'{{ runner_class }}: model loaded in {time.monotonic() - t0:.2f}s')
+
+{% if model_family != "ultralytics" %}
+        # torch.compile: fuses ops and eliminates Python overhead after warmup.
+        self._use_compile = node.declare_parameter('use_torch_compile', True).value
+        if self._use_compile:
+            self.logger.info('{{ runner_class }}: applying torch.compile to forward()...')
+            t0 = time.monotonic()
+            self.model.forward = torch.compile(self.model.forward)
+            self.logger.info(f'{{ runner_class }}: torch.compile applied in {time.monotonic() - t0:.2f}s '
+                             '(first inference will trigger compilation)')
+        else:
+            self.logger.info('{{ runner_class }}: torch.compile disabled via parameter')
+{% endif %}
+
+        self.logger.info(f'{{ runner_class }}: ready.')
 
 {% if model_family == "ultralytics" %}
     def infer(self, image):

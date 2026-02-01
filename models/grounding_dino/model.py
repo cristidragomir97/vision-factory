@@ -1,12 +1,13 @@
 """Grounding DINO model via HuggingFace Transformers."""
 
-import cv2
 import numpy as np
 import torch
 from transformers import AutoProcessor, AutoModelForZeroShotObjectDetection
 
+from .base_model import HuggingFaceModel
 
-class {{ model_class }}:
+
+class GroundingDinoModel(HuggingFaceModel):
     """Open-vocabulary object detection using text prompts.
 
     Detects objects described by natural language phrases.
@@ -18,34 +19,21 @@ class {{ model_class }}:
         "grounding_dino_base": "IDEA-Research/grounding-dino-base",
     }
 
-    def __init__(self, node):
-        self.node = node
+    def __init__(self, node, variant):
+        super().__init__(node, variant, AutoProcessor, AutoModelForZeroShotObjectDetection)
         self.box_threshold = node.get_parameter('box_threshold').value
         self.text_threshold = node.get_parameter('text_threshold').value
         self.default_prompt = node.get_parameter('default_prompt').value
 
-    def load(self, device):
-        repo = self.VARIANT_MAP.get("{{ variant }}")
-        if repo is None:
-            raise ValueError(f"Unknown variant: {{ variant }}")
-
-        self.processor = AutoProcessor.from_pretrained(repo)
-        self.model = AutoModelForZeroShotObjectDetection.from_pretrained(repo).to(device)
-        self.model.eval()
-        self.device = device
-
     def preprocess(self, image, text=None):
         """Process image and text prompt for the model."""
+        import cv2
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         prompt = text if text is not None else self.default_prompt
 
         inputs = self.processor(images=rgb, text=prompt, return_tensors="pt")
         self._last_input_ids = inputs.get("input_ids")
         return {k: v.to(self.device) for k, v in inputs.items()}
-
-    def forward(self, inputs):
-        """Run model forward pass."""
-        return self.model(**inputs)
 
     def postprocess(self, outputs, original_size=None):
         """Extract detections with phrase matching."""
@@ -74,3 +62,6 @@ class {{ model_class }}:
             'class_ids': np.zeros(len(scores), dtype=np.int32),
             'class_names': labels,
         }
+
+
+Model = GroundingDinoModel

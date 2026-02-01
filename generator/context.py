@@ -24,6 +24,8 @@ RUNNER_CLASS_MAP: dict[str, str] = {
     "cuda": "CudaRunner",
     "rocm": "RocmRunner",
     "openvino": "OpenVinoRunner",
+    "tensorrt": "TensorRtRunner",
+    "onnx": "OnnxRunner",
 }
 
 # Map source.type to model_family for template branching

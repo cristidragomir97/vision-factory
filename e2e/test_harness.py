@@ -68,13 +68,17 @@ def _wait_for_node(node_name: str, timeout: float = 60.0) -> float:
     raise TimeoutError(f"Node /{node_name} did not appear within {timeout}s")
 
 
-def _count_messages(topic: str, duration: float) -> dict:
-    """Subscribe to a topic for `duration` seconds and count messages."""
+def _count_messages(topic: str, duration: float, first_msg_timeout: float = 300.0) -> dict:
+    """Subscribe to a topic for `duration` seconds and count messages.
+
+    first_msg_timeout is generous (default 5 min) to allow for first-run
+    model compilation (TensorRT engine export, torch.compile, etc.).
+    """
     # First, echo one message to confirm the topic is active and show its content
-    _log(f"Waiting for first message on {topic}...")
+    _log(f"Waiting for first message on {topic} (timeout {first_msg_timeout}s)...")
     result = subprocess.run(
         ["ros2", "topic", "echo", topic, "--once"],
-        capture_output=True, text=True, timeout=duration,
+        capture_output=True, text=True, timeout=first_msg_timeout,
     )
     got_first = result.returncode == 0
     _log(f"First message received: {got_first}")
@@ -118,19 +122,20 @@ def _count_messages(topic: str, duration: float) -> dict:
 
 
 def _start_input_source(args) -> subprocess.Popen | None:
-    """Start the input source (rosbag or usb_cam). Returns the process."""
+    """Start the input source (rosbag only). Returns the process.
+
+    usb_cam runs as a compose service on the shared network — the harness
+    doesn't need to start it. Only rosbag playback runs inside the node
+    container.
+    """
     if args.input_source == "rosbag":
         return _popen_show(
             ["ros2", "bag", "play", args.bag, "--loop"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
     elif args.input_source == "usb_cam":
-        return _popen_show(
-            ["ros2", "run", "usb_cam", "usb_cam_node_exe",
-             "--ros-args", "-p", "camera_name:=camera",
-             "-r", "/image_raw:=/camera/image_raw"],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-        )
+        _log("usb_cam runs as a compose service — not starting locally")
+        return None
     return None
 
 
@@ -210,9 +215,13 @@ def main():
 
     try:
         # 1. Launch the vision node — stderr is streamed live so we see ROS logs
+        #    Use python3 -m to launch instead of ros2 run, because ros2 run
+        #    uses the colcon-generated entry point script whose shebang points
+        #    at /usr/bin/python3 (system Python, can't see venv packages).
         _log("--- Launching vision node ---")
         node_proc = _popen_show(
-            ["ros2", "run", args.package, args.node],
+            ["python3", "-c",
+             f"from {args.package}.node import main; main()"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         # Stream node stderr (ROS logs) in a background thread

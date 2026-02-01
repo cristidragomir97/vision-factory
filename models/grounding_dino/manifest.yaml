@@ -8,6 +8,7 @@ model:
     - grounding_dino_tiny
     - grounding_dino_base
   default_variant: grounding_dino_base
+  backends: [cuda, rocm, openvino]
 
 source:
   type: huggingface

@@ -15,7 +15,6 @@ import numpy as np
 from std_msgs.msg import String
 {% endif %}
 
-from .model import {{ model_class }}
 from .runner import {{ runner_class }}
 
 
@@ -32,14 +31,10 @@ class VisionNode(Node):
         self.declare_parameter('{{ param.name }}', {{ param.default | python_repr }})
 {% endfor %}
         self.declare_parameter('input_topic', '{{ input_topic }}')
+        self.declare_parameter('variant', '{{ variant }}')
         self.get_logger().info('Parameters declared.')
 
-        # Initialize model and runner
-        self.get_logger().info('Creating model ({{ model_class }})...')
-        t0 = time.monotonic()
-        self.model = {{ model_class }}(self)
-        self.get_logger().info(f'Model created in {time.monotonic() - t0:.2f}s')
-
+        # Initialize runner (runner creates the model internally)
         self.get_logger().info('Creating runner ({{ runner_class }})...')
         t0 = time.monotonic()
         self.runner = {{ runner_class }}(self)

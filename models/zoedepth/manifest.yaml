@@ -9,6 +9,7 @@ model:
     - zoedepth_k   # KITTI outdoor
     - zoedepth_nk  # Combined
   default_variant: zoedepth_nk
+  backends: [cuda, rocm, openvino]
 
 source:
   type: huggingface

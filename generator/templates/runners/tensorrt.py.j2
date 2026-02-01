@@ -1,0 +1,92 @@
+"""TensorRT inference runner for {{ model_name }}.
+
+Exports and caches TensorRT engines for optimized GPU inference.
+CUDA memory safety: all infer() paths ensure contiguous image arrays.
+"""
+
+import os
+import time
+import numpy as np
+import torch
+from .model import Model
+
+
+def _ensure_contiguous(image):
+    """Ensure the image array is contiguous in memory.
+
+    cv_bridge.imgmsg_to_cv2 can return non-contiguous arrays and
+    TensorRT is strict about memory layout.
+    """
+    if not image.flags['C_CONTIGUOUS']:
+        return np.ascontiguousarray(image)
+    return image
+
+
+class {{ runner_class }}:
+    def __init__(self, node):
+        self.node = node
+        self.logger = node.get_logger()
+        self.logger.info('{{ runner_class }}: initializing...')
+
+        self.device = torch.device('cuda:{{ device_id }}')
+        self.logger.info(f'{{ runner_class }}: using device {self.device}')
+
+        # TensorRT-specific parameters
+        node.declare_parameter('precision', 'fp16')
+        node.declare_parameter('engine_cache_dir', '/tmp/trt_engines')
+        self.precision = node.get_parameter('precision').value
+        self.engine_cache_dir = node.get_parameter('engine_cache_dir').value
+
+        variant = node.get_parameter('variant').value
+        self.model = Model(node, variant)
+
+{% if model_family == "ultralytics" %}
+        # Engine caching: check for pre-built engine
+        engine_name = f'{variant}_{self.precision}.engine'
+        engine_path = os.path.join(self.engine_cache_dir, engine_name)
+
+        if os.path.isfile(engine_path):
+            self.logger.info(f'{{ runner_class }}: found cached engine at {engine_path}')
+            self.model.load_engine(engine_path)
+        else:
+            self.logger.info(f'{{ runner_class }}: no cached engine, building...')
+            self.model.load(self.device)
+            half = self.precision in ('fp16', 'half')
+            int8 = self.precision == 'int8'
+            self.model.export_tensorrt(
+                half=half,
+                int8=int8,
+                cache_dir=self.engine_cache_dir,
+                engine_name=engine_name,
+            )
+            self.model.load_engine(engine_path)
+{% else %}
+        # Non-Ultralytics models: fall back to standard CUDA loading
+        self.model.load(self.device)
+{% endif %}
+
+        self.logger.info('{{ runner_class }}: ready.')
+
+{% if model_family == "ultralytics" %}
+    def infer(self, image):
+        """Run inference using Ultralytics TensorRT engine."""
+        image = _ensure_contiguous(image)
+        raw = self.model.predict(image)
+        return self.model.postprocess(raw)
+{% elif has_text_input %}
+    def infer(self, image, text=None):
+        """Run inference with image and text input."""
+        image = _ensure_contiguous(image)
+        inputs = self.model.preprocess(image, text=text)
+        with torch.no_grad():
+            outputs = self.model.forward(inputs)
+        return self.model.postprocess(outputs, original_size=image.shape[:2])
+{% else %}
+    def infer(self, image):
+        """Run inference: preprocess -> forward -> postprocess."""
+        image = _ensure_contiguous(image)
+        inputs = self.model.preprocess(image)
+        with torch.no_grad():
+            outputs = self.model.forward(inputs)
+        return self.model.postprocess(outputs, original_size=image.shape[:2])
+{% endif %}

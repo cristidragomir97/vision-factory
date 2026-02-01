@@ -34,6 +34,14 @@ BACKENDS: dict[str, BackendConfig] = {
         torch_index_url=None,
         extra_deps=["openvino>=2024.0"],
     ),
+    "tensorrt": BackendConfig(
+        torch_index_url="https://download.pytorch.org/whl/cu124",
+        extra_deps=["tensorrt>=10.0"],
+    ),
+    "onnx": BackendConfig(
+        torch_index_url=None,
+        extra_deps=["onnxruntime>=1.17.0"],
+    ),
 }
 
 BASE_DEPS = [
@@ -103,19 +111,6 @@ def resolve_dependencies(
     ros_deps = list(ROS_DEPS)
     ros_deps.extend(OUTPUT_ROS_DEPS.get(output_type, []))
 
-    # Check known conflicts
-    if model_name == "segment_anything" and backend == "openvino":
-        warnings.append(
-            "SAM2 requires torch>=2.5.1 with CUDA. "
-            "OpenVINO backend may not support all SAM2 features."
-        )
-
-    if model_name == "rtmpose" and backend != "cuda":
-        warnings.append(
-            "RTMPose via rtmlib uses ONNX Runtime. "
-            "Backend selection only affects other torch operations."
-        )
-
     return ResolvedDeps(
         pip_deps=pip_deps,
         torch_index_url=backend_cfg.torch_index_url,
@@ -129,6 +124,7 @@ def validate_selection(
     backend: str,
     variant: str,
     available_variants: list[str],
+    supported_backends: list[str] | None = None,
 ) -> list[str]:
     """Validate a user's selections.
 
@@ -138,6 +134,11 @@ def validate_selection(
 
     if backend not in BACKENDS:
         errors.append(f"Unknown backend '{backend}'. Choose from: {list(BACKENDS.keys())}")
+    elif supported_backends and backend not in supported_backends:
+        errors.append(
+            f"Backend '{backend}' is not supported by model '{model_name}'. "
+            f"Supported backends: {supported_backends}"
+        )
 
     if variant not in available_variants:
         errors.append(
